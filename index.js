@@ -6,7 +6,7 @@ const {
   Events,
   ActivityType,
   ChannelType,
-  PermissionsBitField
+  PermissionFlagsBits
 } = require("discord.js")
 const OpenAI = require("openai")
 
@@ -26,10 +26,10 @@ const BOT_NAME = "Disogle"
 const FOUNDER_NAME = "Miraç Başyiğit"
 
 const BOT_IDENTITY_TR =
-  "Disogle, Miraç Başyiğit tarafından geliştirilen yapay zeka tabanlı bir Discord botudur. Soruları yanıtlayabilir, metin üretebilir, kod yazabilir, özel konuşma odaları açabilir ve topluluk etkileşimini artırabilir."
+  "Disogle, Miraç Başyiğit tarafından geliştirilen yapay zeka tabanlı bir Discord botudur. Soruları yanıtlayabilir, metin üretebilir, kod yazabilir, özel odalar açabilir ve sunucu yapısını yönetebilir."
 
 const BOT_IDENTITY_EN =
-  "Disogle is an AI-based Discord bot developed by Miraç Başyiğit. It can answer questions, generate text, write code, open private support rooms, and help keep communities active."
+  "Disogle is an AI-based Discord bot developed by Miraç Başyiğit. It can answer questions, generate text, write code, open private rooms, and manage server structure."
 
 const repliedMessages = new Set()
 const userCooldowns = new Map()
@@ -192,7 +192,7 @@ function getReplyProfile(text) {
   if (len <= 8) return { maxTokens: 40, style: "very_short" }
   if (len <= 20) return { maxTokens: 70, style: "short" }
   if (len <= 70) return { maxTokens: 140, style: "medium" }
-  return { maxTokens: 240, style: "detailed" }
+  return { maxTokens: 260, style: "detailed" }
 }
 
 function isLowSignal(text) {
@@ -337,23 +337,169 @@ function randomItem(arr) {
 function getGameControlIntent(text) {
   const lower = text.toLowerCase()
 
-  if (
-    ["ipucu", "hint", "bir ipucu", "1 harf", "bir harf daha", "1 harf daha", "harf ver"].some(x => lower.includes(x))
-  ) return "hint"
-
-  if (
-    ["bilemedim", "cevap ne", "cevabı söyle", "cevabi soyle", "cevabı söyler misin", "answer", "what was it", "tell me the answer"].some(x => lower.includes(x))
-  ) return "answer"
-
-  if (
-    ["geç", "pas", "skip", "next"].some(x => lower.includes(x))
-  ) return "skip"
-
-  if (
-    ["oyunu kapat", "oyun bitsin", "oyunu bitir", "dur", "stop game", "stop", "end game"].some(x => lower.includes(x))
-  ) return "stop"
+  if (["ipucu", "hint", "bir ipucu", "1 harf", "bir harf daha", "1 harf daha", "harf ver"].some(x => lower.includes(x))) return "hint"
+  if (["bilemedim", "cevap ne", "cevabı söyle", "cevabi soyle", "cevabı söyler misin", "answer", "what was it", "tell me the answer"].some(x => lower.includes(x))) return "answer"
+  if (["geç", "pas", "skip", "next"].some(x => lower.includes(x))) return "skip"
+  if (["oyunu kapat", "oyun bitsin", "oyunu bitir", "dur", "stop game", "stop", "end game"].some(x => lower.includes(x))) return "stop"
 
   return null
+}
+
+function buildStyleInstruction(language, tone, replyStyle) {
+  const langPart = language === "tr" ? "Reply in natural Turkish." : "Reply in natural English."
+
+  const toneMap = {
+    excited: "Match excitement only if it is truly present. Do not overact.",
+    soft: "Be softer and calmer.",
+    casual: "Be natural and casual, but not childish.",
+    helpful: "Be practical and focused.",
+    neutral: "Stay calm, balanced and natural."
+  }
+
+  const sizeMap = {
+    very_short: "Keep it very short.",
+    short: "Keep it short.",
+    medium: "Keep it concise but complete.",
+    detailed: "Be more detailed, but stay readable."
+  }
+
+  return `${langPart} ${toneMap[tone]} ${sizeMap[replyStyle]} Use emojis only when they fit naturally. Do not keep asking what else the user wants after every reply. Only do that when it genuinely fits.`
+}
+
+function slugify(input) {
+  return String(input || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ı/g, "i")
+    .replace(/ğ/g, "g")
+    .replace(/ü/g, "u")
+    .replace(/ş/g, "s")
+    .replace(/ö/g, "o")
+    .replace(/ç/g, "c")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .slice(0, 90)
+}
+
+function toDiscordChannelType(type) {
+  const t = String(type || "").toLowerCase()
+  if (t === "voice" || t === "ses") return ChannelType.GuildVoice
+  if (t === "category" || t === "kategori") return ChannelType.GuildCategory
+  return ChannelType.GuildText
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    const match = text.match(/\{[\s\S]*\}/)
+    if (!match) return null
+    try {
+      return JSON.parse(match[0])
+    } catch {
+      return null
+    }
+  }
+}
+
+function defaultChannelsForCategory(name, language) {
+  const lower = String(name || "").toLowerCase()
+
+  if (lower.includes("core") || lower.includes("ana")) {
+    return language === "tr"
+      ? [
+          { name: "genel", type: "text", topic: "Genel sohbet ve ana konuşmalar." },
+          { name: "duyurular", type: "text", topic: "Önemli sunucu duyuruları." },
+          { name: "kurallar", type: "text", topic: "Sunucu kuralları ve rehberler." },
+          { name: "destek", type: "text", topic: "Yardım ve destek talepleri." },
+          { name: "lounge", type: "text", topic: "Rahat topluluk sohbeti." },
+          { name: "sohbet", type: "voice" }
+        ]
+      : [
+          { name: "general", type: "text", topic: "Main conversations and community chat." },
+          { name: "announcements", type: "text", topic: "Important server announcements." },
+          { name: "rules", type: "text", topic: "Server rules and guidance." },
+          { name: "support", type: "text", topic: "Help and support requests." },
+          { name: "lounge", type: "text", topic: "Casual community chat." },
+          { name: "voice-chat", type: "voice" }
+        ]
+  }
+
+  return language === "tr"
+    ? [
+        { name: "genel", type: "text", topic: `${name} için genel kanal.` },
+        { name: "paylasim", type: "text", topic: `${name} için içerik ve paylaşım alanı.` },
+        { name: "sohbet", type: "voice" }
+      ]
+    : [
+        { name: "general", type: "text", topic: `General channel for ${name}.` },
+        { name: "sharing", type: "text", topic: `Content and sharing area for ${name}.` },
+        { name: "voice-chat", type: "voice" }
+      ]
+}
+
+function hasAdminAccess(member) {
+  return member.permissions.has(PermissionFlagsBits.Administrator)
+}
+
+function botCanManage(guild) {
+  const me = guild.members.me
+  if (!me) return false
+  return me.permissions.has(PermissionFlagsBits.ManageChannels)
+}
+
+function getRoleByName(guild, roleName) {
+  const target = String(roleName || "").toLowerCase().trim()
+  return guild.roles.cache.find(r => r.name.toLowerCase() === target)
+}
+
+function buildPermissionOverwrites(guild, plan, requesterId) {
+  const overwrites = []
+  const everyoneId = guild.roles.everyone.id
+  const requested = Array.isArray(plan.permissions) ? plan.permissions : []
+
+  if (!requested.length) return []
+
+  for (const item of requested) {
+    const subject = String(item.subject || "everyone").toLowerCase().trim()
+    const allowList = Array.isArray(item.allow) ? item.allow : []
+    const denyList = Array.isArray(item.deny) ? item.deny : []
+
+    let targetId = everyoneId
+    let type = 0
+
+    if (subject === "everyone" || subject === "@everyone") {
+      targetId = everyoneId
+      type = 0
+    } else if (subject === "requester" || subject === "user") {
+      targetId = requesterId
+      type = 1
+    } else {
+      const role = getRoleByName(guild, subject.replace(/^@/, ""))
+      if (!role) continue
+      targetId = role.id
+      type = 0
+    }
+
+    const allow = allowList
+      .map(name => PermissionFlagsBits[name])
+      .filter(Boolean)
+
+    const deny = denyList
+      .map(name => PermissionFlagsBits[name])
+      .filter(Boolean)
+
+    overwrites.push({
+      id: targetId,
+      type,
+      allow,
+      deny
+    })
+  }
+
+  return overwrites
 }
 
 async function createPrivateChannel(message, language) {
@@ -383,23 +529,23 @@ async function createPrivateChannel(message, language) {
     permissionOverwrites: [
       {
         id: guild.roles.everyone.id,
-        deny: [PermissionsBitField.Flags.ViewChannel]
+        deny: [PermissionFlagsBits.ViewChannel]
       },
       {
         id: member.id,
         allow: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.SendMessages,
-          PermissionsBitField.Flags.ReadMessageHistory
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory
         ]
       },
       {
         id: client.user.id,
         allow: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.SendMessages,
-          PermissionsBitField.Flags.ReadMessageHistory,
-          PermissionsBitField.Flags.ManageChannels
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory,
+          PermissionFlagsBits.ManageChannels
         ]
       }
     ]
@@ -476,10 +622,8 @@ async function startGame(message, language, gameType) {
 function getHint(game) {
   const a = String(game.answer)
   if (a.length <= 1) return a
-
   if (a.length === 2) return `${a[0]}_`
   if (a.length === 3) return `${a[0]}${a[1]}_`
-
   return `${a.slice(0, 2)}${"_".repeat(a.length - 2)}`
 }
 
@@ -516,11 +660,7 @@ async function handleGameMessage(message, game) {
   const control = getGameControlIntent(content)
 
   if (control === "hint") {
-    await message.reply(
-      language === "tr"
-        ? `İpucu: ${getHint(game)}`
-        : `Hint: ${getHint(game)}`
-    )
+    await message.reply(language === "tr" ? `İpucu: ${getHint(game)}` : `Hint: ${getHint(game)}`)
     return "handled"
   }
 
@@ -547,11 +687,7 @@ async function handleGameMessage(message, game) {
 
   if (control === "stop") {
     clearGame(message.channel.id)
-    await message.reply(
-      language === "tr"
-        ? "Tamam, oyunu kapattım."
-        : "Alright, I ended the game."
-    )
+    await message.reply(language === "tr" ? "Tamam, oyunu kapattım." : "Alright, I ended the game.")
     return "handled"
   }
 
@@ -559,11 +695,7 @@ async function handleGameMessage(message, game) {
 
   if (answer === normalize(game.answer)) {
     clearGame(message.channel.id)
-    await message.reply(
-      language === "tr"
-        ? "Doğru bildin. Güzel oynadın."
-        : "Correct. Nice one."
-    )
+    await message.reply(language === "tr" ? "Doğru bildin. Güzel oynadın." : "Correct. Nice one.")
     return "handled"
   }
 
@@ -590,28 +722,177 @@ async function handleGameMessage(message, game) {
   return "handled"
 }
 
-function buildStyleInstruction(language, tone, replyStyle) {
-  const langPart =
-    language === "tr"
-      ? "Reply in natural Turkish."
-      : "Reply in natural English."
+async function detectManagementIntent(question, language) {
+  const prompt = `
+You are an intent parser for a Discord management bot.
+Return ONLY valid JSON.
+Decide whether the user wants server structure changes.
 
-  const toneMap = {
-    excited: "Match excitement only if it is truly present. Do not overact.",
-    soft: "Be softer and calmer.",
-    casual: "Be natural and casual, but not childish.",
-    helpful: "Be practical and focused.",
-    neutral: "Stay calm, balanced and natural."
+Schema:
+{
+  "isManagementRequest": boolean,
+  "action": "create_structure" | "none",
+  "categoryName": string | null,
+  "channels": [
+    {
+      "name": string,
+      "type": "text" | "voice",
+      "topic": string | null
+    }
+  ],
+  "permissions": [
+    {
+      "subject": "everyone" | "requester" | string,
+      "allow": string[],
+      "deny": string[]
+    }
+  ],
+  "reason": string
+}
+
+Rules:
+- If the user wants a category or channels created, set isManagementRequest true.
+- If the user says "make sensible channels" or similar, invent a reasonable channel list.
+- If the user gives only a category name, still produce good default channels.
+- Supported permission names must use Discord.js PermissionFlagsBits names such as:
+  "ViewChannel", "SendMessages", "Connect", "Speak", "ReadMessageHistory", "ManageChannels"
+- Subjects can be "everyone", "requester", or a role name like "admin", "moderator", "vip".
+- Keep channels realistic and concise.
+- If request is unrelated to server management, return action "none".
+
+User message:
+${question}
+
+Language:
+${language}
+`
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0.2,
+    max_tokens: 300,
+    messages: [
+      {
+        role: "system",
+        content: "Return only JSON."
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ]
+  })
+
+  const text = response.choices?.[0]?.message?.content?.trim() || ""
+  const parsed = safeJsonParse(text)
+
+  if (!parsed) {
+    return {
+      isManagementRequest: false,
+      action: "none",
+      categoryName: null,
+      channels: [],
+      permissions: [],
+      reason: "parse_failed"
+    }
   }
 
-  const sizeMap = {
-    very_short: "Keep it very short.",
-    short: "Keep it short.",
-    medium: "Keep it concise but complete.",
-    detailed: "Be more detailed, but stay readable."
+  return parsed
+}
+
+async function executeStructurePlan(message, plan, language) {
+  const guild = message.guild
+  const member = message.member
+
+  if (!hasAdminAccess(member)) {
+    await message.reply(
+      language === "tr"
+        ? "Bunu sadece yönetici yetkisi olan biri çalıştırabilir."
+        : "Only someone with administrator permission can run that."
+    )
+    return
   }
 
-  return `${langPart} ${toneMap[tone]} ${sizeMap[replyStyle]} Use emojis only when they fit naturally. Do not keep asking what else the user wants after every reply. Only do that when it genuinely fits.`
+  if (!botCanManage(guild)) {
+    await message.reply(
+      language === "tr"
+        ? "Bunu yapabilmem için bende Manage Channels yetkisi olmalı."
+        : "I need Manage Channels permission to do that."
+    )
+    return
+  }
+
+  let categoryName = plan.categoryName
+  if (!categoryName || !String(categoryName).trim()) {
+    categoryName = language === "tr" ? "Yeni Kategori" : "New Category"
+  }
+
+  const normalizedCategoryName = slugify(categoryName)
+  const existingCategory = guild.channels.cache.find(
+    c => c.type === ChannelType.GuildCategory && c.name === normalizedCategoryName
+  )
+
+  const categoryOverwrites = buildPermissionOverwrites(guild, plan, member.id)
+
+  const category =
+    existingCategory ||
+    (await guild.channels.create({
+      name: normalizedCategoryName,
+      type: ChannelType.GuildCategory,
+      permissionOverwrites: categoryOverwrites.length ? categoryOverwrites : undefined
+    }))
+
+  let channels = Array.isArray(plan.channels) ? plan.channels : []
+  if (!channels.length) {
+    channels = defaultChannelsForCategory(categoryName, language)
+  }
+
+  const created = []
+  const skipped = []
+
+  for (const ch of channels) {
+    const rawName = ch?.name || "kanal"
+    const name = slugify(rawName)
+    const type = toDiscordChannelType(ch?.type)
+    const topic = typeof ch?.topic === "string" ? ch.topic : null
+
+    const exists = guild.channels.cache.find(
+      c => c.parentId === category.id && c.name === name && c.type === type
+    )
+
+    if (exists) {
+      skipped.push(`#${name}`)
+      continue
+    }
+
+    const overwrites = buildPermissionOverwrites(guild, plan, member.id)
+
+    const createdChannel = await guild.channels.create({
+      name,
+      type,
+      parent: category.id,
+      topic: type === ChannelType.GuildText ? topic : undefined,
+      permissionOverwrites: overwrites.length ? overwrites : undefined
+    })
+
+    created.push(createdChannel.toString())
+  }
+
+  const lines = []
+
+  if (language === "tr") {
+    lines.push(`Kategori hazır: ${category}`)
+    if (created.length) lines.push(`Oluşturulan kanallar: ${created.join(", ")}`)
+    if (skipped.length) lines.push(`Zaten var olduğu için atlananlar: ${skipped.join(", ")}`)
+    if (!created.length && !skipped.length) lines.push("Yeni kanal oluşturulmadı.")
+  } else {
+    lines.push(`Category ready: ${category}`)
+    if (created.length) lines.push(`Created channels: ${created.join(", ")}`)
+    if (skipped.length) lines.push(`Skipped because they already exist: ${skipped.join(", ")}`)
+    if (!created.length && !skipped.length) lines.push("No new channels were created.")
+  }
+
+  await message.reply(lines.join("\n"))
 }
 
 client.once(Events.ClientReady, readyClient => {
@@ -692,7 +973,7 @@ client.on(Events.MessageCreate, async message => {
   setTimeout(() => repliedMessages.delete(message.id), 15000)
 
   if (isOnCooldown(message.author.id)) return
-  setCooldown(message.author.id, 1800)
+  setCooldown(message.author.id, 1500)
 
   let question = message.content
   if (message.mentions.has(client.user)) {
@@ -762,6 +1043,13 @@ client.on(Events.MessageCreate, async message => {
   try {
     await message.channel.sendTyping()
 
+    const management = await detectManagementIntent(question, language)
+
+    if (management.isManagementRequest && management.action === "create_structure") {
+      await executeStructurePlan(message, management, language)
+      return
+    }
+
     const recent = state.recentMessages.slice(-4).join("\n")
     const styleInstruction = buildStyleInstruction(language, tone, replyProfile.style)
     const firstTime = !greetedUsers.has(message.author.id)
@@ -797,7 +1085,7 @@ client.on(Events.MessageCreate, async message => {
     greetedUsers.add(message.author.id)
     await message.reply(reply)
   } catch (error) {
-    console.error("OPENAI ERROR:", error)
+    console.error("ERROR:", error)
     await message.reply(
       language === "tr"
         ? "Şu an bir hata oluştu. Birazdan tekrar dene."

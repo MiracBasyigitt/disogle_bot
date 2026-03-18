@@ -14,8 +14,7 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.MessageContent
   ]
 })
 
@@ -140,23 +139,6 @@ client.once(Events.ClientReady, readyClient => {
     ],
     status: "online"
   })
-})
-
-client.on(Events.GuildMemberAdd, async member => {
-  try {
-    const welcomeChannel =
-      member.guild.channels.cache.find(channel => channel.name === "welcome") ||
-      member.guild.channels.cache.find(channel => channel.name === "general") ||
-      member.guild.systemChannel
-
-    if (!welcomeChannel) return
-
-    await welcomeChannel.send(
-      `Welcome ${member} to **${member.guild.name}**.\n\nI’m **Disogle**, your Discord AI assistant.\nYou can mention me anytime for help, ideas, answers, or a private session.\n\nTry:\n- \`@Disogle what can you do?\`\n- \`@Disogle I want private talk\``
-    )
-  } catch (error) {
-    console.error("WELCOME ERROR:", error)
-  }
 })
 
 client.on(Events.MessageCreate, async message => {

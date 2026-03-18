@@ -136,7 +136,8 @@ function setCooldown(userId, ms) {
 function getUserState(userId) {
   if (!userMemory.has(userId)) {
     userMemory.set(userId, {
-      language: "auto",
+      languageMode: "auto",
+      lastDetectedLanguage: "tr",
       tone: "neutral",
       recentMessages: []
     })
@@ -152,8 +153,8 @@ function saveUserMessage(userId, content) {
 
 function detectLanguage(text) {
   const lower = text.toLowerCase()
-  const trHints = ["merhaba", "selam", "neden", "nasıl", "kurucun", "özel", "konuş", "yapar", "senin", "türkçe", "bilemedim", "ipucu"]
-  const enHints = ["hello", "what", "why", "how", "founder", "private", "talk", "write", "code", "english", "hint", "skip"]
+  const trHints = ["merhaba", "selam", "neden", "nasıl", "kurucun", "özel", "konuş", "yapar", "senin", "türkçe", "bilemedim", "ipucu", "cevap"]
+  const enHints = ["hello", "what", "why", "how", "founder", "private", "talk", "write", "code", "english", "hint", "skip", "answer"]
 
   const trScore = trHints.filter(h => lower.includes(h)).length
   const enScore = enHints.filter(h => lower.includes(h)).length
@@ -162,6 +163,17 @@ function detectLanguage(text) {
   if (enScore > trScore) return "en"
   if (/[çğıöşüÇĞİÖŞÜ]/.test(text)) return "tr"
   return "en"
+}
+
+function resolveLanguage(userId, text) {
+  const state = getUserState(userId)
+
+  if (state.languageMode === "tr") return "tr"
+  if (state.languageMode === "en") return "en"
+
+  const detected = detectLanguage(text)
+  state.lastDetectedLanguage = detected
+  return detected
 }
 
 function detectTone(text) {
@@ -246,6 +258,7 @@ function asksForGame(text) {
     "oyun oynayalım",
     "oyun başlat",
     "bir oyun oyna",
+    "lets play",
     "let's play",
     "play a game",
     "start a game",
@@ -264,6 +277,45 @@ function chooseGame(text, language) {
   if (lower.includes("would you rather") || lower.includes("hangisini seçerdin")) return "wyr"
 
   return language === "tr" ? "riddle" : "riddle"
+}
+
+function detectLanguageCommand(text) {
+  const lower = text.toLowerCase()
+
+  if (
+    lower.includes("türkçe konuş") ||
+    lower.includes("turkce konus") ||
+    lower.includes("speak turkish") ||
+    lower.includes("talk in turkish") ||
+    lower.includes("reply in turkish")
+  ) {
+    return "tr"
+  }
+
+  if (
+    lower.includes("ingilizce konuş") ||
+    lower.includes("ingilizce konus") ||
+    lower.includes("english konuş") ||
+    lower.includes("speak english") ||
+    lower.includes("talk in english") ||
+    lower.includes("reply in english")
+  ) {
+    return "en"
+  }
+
+  if (
+    lower.includes("türkçe konuşmayı bırak") ||
+    lower.includes("ingilizce konuşmayı bırak") ||
+    lower.includes("normal konuş") ||
+    lower.includes("otomatik konuş") ||
+    lower.includes("auto language") ||
+    lower.includes("automatic language") ||
+    lower.includes("return to auto language")
+  ) {
+    return "auto"
+  }
+
+  return null
 }
 
 function createGame(channelId, game) {
@@ -285,21 +337,21 @@ function randomItem(arr) {
 function getGameControlIntent(text) {
   const lower = text.toLowerCase()
 
-  if ([
-    "ipucu", "hint"
-  ].some(x => lower.includes(x))) return "hint"
+  if (
+    ["ipucu", "hint", "bir ipucu", "1 harf", "bir harf daha", "1 harf daha", "harf ver"].some(x => lower.includes(x))
+  ) return "hint"
 
-  if ([
-    "bilemedim", "cevap ne", "answer", "what was it"
-  ].some(x => lower.includes(x))) return "answer"
+  if (
+    ["bilemedim", "cevap ne", "cevabı söyle", "cevabi soyle", "cevabı söyler misin", "answer", "what was it", "tell me the answer"].some(x => lower.includes(x))
+  ) return "answer"
 
-  if ([
-    "geç", "pas", "skip", "next"
-  ].some(x => lower.includes(x))) return "skip"
+  if (
+    ["geç", "pas", "skip", "next"].some(x => lower.includes(x))
+  ) return "skip"
 
-  if ([
-    "oyunu kapat", "oyun bitsin", "dur", "stop game", "stop"
-  ].some(x => lower.includes(x))) return "stop"
+  if (
+    ["oyunu kapat", "oyun bitsin", "oyunu bitir", "dur", "stop game", "stop", "end game"].some(x => lower.includes(x))
+  ) return "stop"
 
   return null
 }
@@ -424,7 +476,11 @@ async function startGame(message, language, gameType) {
 function getHint(game) {
   const a = String(game.answer)
   if (a.length <= 1) return a
-  return `${a[0]}${"_".repeat(Math.max(0, a.length - 1))}`
+
+  if (a.length === 2) return `${a[0]}_`
+  if (a.length === 3) return `${a[0]}${a[1]}_`
+
+  return `${a.slice(0, 2)}${"_".repeat(a.length - 2)}`
 }
 
 async function handleGameMessage(message, game) {
@@ -449,6 +505,12 @@ async function handleGameMessage(message, game) {
   if (asksForGame(content)) {
     clearGame(message.channel.id)
     return "handoff_new_game"
+  }
+
+  const langCmd = detectLanguageCommand(content)
+  if (langCmd) {
+    clearGame(message.channel.id)
+    return "handoff_language"
   }
 
   const control = getGameControlIntent(content)
@@ -577,13 +639,13 @@ client.on(Events.MessageCreate, async message => {
     const result = await handleGameMessage(message, activeGame)
 
     if (result === "handoff_private") {
-      const language = detectLanguage(message.content)
+      const language = resolveLanguage(message.author.id, message.content)
       await createPrivateChannel(message, language)
       return
     }
 
     if (result === "handoff_founder") {
-      const language = detectLanguage(message.content)
+      const language = resolveLanguage(message.author.id, message.content)
       await message.reply(
         language === "tr"
           ? `Benim kurucum ${FOUNDER_NAME}.`
@@ -593,15 +655,30 @@ client.on(Events.MessageCreate, async message => {
     }
 
     if (result === "handoff_identity") {
-      const language = detectLanguage(message.content)
+      const language = resolveLanguage(message.author.id, message.content)
       await message.reply(language === "tr" ? BOT_IDENTITY_TR : BOT_IDENTITY_EN)
       return
     }
 
     if (result === "handoff_new_game") {
-      const language = detectLanguage(message.content)
+      const language = resolveLanguage(message.author.id, message.content)
       const gameType = chooseGame(message.content, language)
       await startGame(message, language, gameType)
+      return
+    }
+
+    if (result === "handoff_language") {
+      const mode = detectLanguageCommand(message.content)
+      const state = getUserState(message.author.id)
+      state.languageMode = mode
+
+      if (mode === "tr") {
+        await message.reply("Tamam, Türkçe devam edeceğim.")
+      } else if (mode === "en") {
+        await message.reply("Alright, I will continue in English.")
+      } else {
+        await message.reply("Tamam, tekrar otomatik dil algısına döndüm.")
+      }
       return
     }
 
@@ -625,10 +702,27 @@ client.on(Events.MessageCreate, async message => {
   question = question.replace(new RegExp(BOT_NAME, "ig"), "").trim()
   if (!question) question = message.content.trim()
 
-  const language = detectLanguage(question)
+  const state = getUserState(message.author.id)
+  const langMode = detectLanguageCommand(question)
+
+  if (langMode) {
+    state.languageMode = langMode
+
+    if (langMode === "tr") {
+      await message.reply("Tamam, Türkçe konuşacağım.")
+    } else if (langMode === "en") {
+      await message.reply("Alright, I will speak English.")
+    } else {
+      await message.reply("Tamam, yeniden otomatik dil algısına döndüm.")
+    }
+    return
+  }
+
+  const language = resolveLanguage(message.author.id, question)
   const tone = detectTone(question)
   const replyProfile = getReplyProfile(question)
 
+  state.tone = tone
   saveUserMessage(message.author.id, question)
 
   if (asksAboutFounder(question)) {
@@ -657,19 +751,17 @@ client.on(Events.MessageCreate, async message => {
   }
 
   if (isLowSignal(question)) {
-    const msg =
+    await message.reply(
       language === "tr"
         ? "Daha net yazarsan daha iyi yardımcı olabilirim."
         : "If you say it a bit more clearly, I can help better."
-
-    await message.reply(msg)
+    )
     return
   }
 
   try {
     await message.channel.sendTyping()
 
-    const state = getUserState(message.author.id)
     const recent = state.recentMessages.slice(-4).join("\n")
     const styleInstruction = buildStyleInstruction(language, tone, replyProfile.style)
     const firstTime = !greetedUsers.has(message.author.id)
@@ -680,7 +772,7 @@ client.on(Events.MessageCreate, async message => {
         {
           role: "system",
           content:
-            `You are ${BOT_NAME}, a smart conversational Discord AI developed by ${FOUNDER_NAME}. You can answer questions, write code, generate text, brainstorm ideas, help with decisions, and keep communities active. You may use humor, but keep it sharp and natural, not clownish. Do not behave overly cheerful by default. Emotion should be adaptive, not forced. If asked who you are, you may say: "${BOT_IDENTITY_EN}" If asked about your founder, say your founder is ${FOUNDER_NAME}. If the user wants a private talk, say you can open a private room. ${styleInstruction}`
+            `You are ${BOT_NAME}, a smart conversational Discord AI developed by ${FOUNDER_NAME}. You can answer questions, write code, generate text, brainstorm ideas, help with decisions, and keep communities active. You may use humor, but keep it sharp and natural, not clownish. Do not behave overly cheerful by default. Emotion should be adaptive, not forced. If asked who you are, you may say: "${BOT_IDENTITY_EN}" If asked about your founder, say your founder is ${FOUNDER_NAME}. If the user wants a private talk, say you can open a private room. Respect the user's current language mode. ${styleInstruction}`
         },
         {
           role: "system",
@@ -696,14 +788,13 @@ client.on(Events.MessageCreate, async message => {
       max_tokens: replyProfile.maxTokens
     })
 
-    let reply =
+    const reply =
       response.choices?.[0]?.message?.content?.trim() ||
       (language === "tr"
         ? "Şu an uygun bir cevap üretemedim."
         : "I couldn't generate a response right now.")
 
     greetedUsers.add(message.author.id)
-
     await message.reply(reply)
   } catch (error) {
     console.error("OPENAI ERROR:", error)

@@ -1,5 +1,7 @@
 require("dotenv").config()
 
+const fs = require("fs")
+const path = require("path")
 const {
   Client,
   GatewayIntentBits,
@@ -7,7 +9,6 @@ const {
   ActivityType,
   ChannelType,
   PermissionFlagsBits,
-  PermissionsBitField,
   OverwriteType
 } = require("discord.js")
 const OpenAI = require("openai")
@@ -16,7 +17,8 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers
   ]
 })
 
@@ -24,30 +26,147 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
+const MODEL = process.env.MODEL || "gpt-4o-mini"
 const BOT_NAME = "Disogle"
 const FOUNDER_NAME = "Miraç Başyiğit"
 
 const BOT_IDENTITY_TR =
-  "Disogle, Miraç Başyiğit tarafından geliştirilen yapay zeka tabanlı bir Discord botudur. Soruları yanıtlayabilir, metin üretebilir, kod yazabilir ve sunucu yapısını yönetebilir."
+  "Disogle, Miraç Başyiğit tarafından geliştirilen yapay zeka tabanlı bir Discord botudur. Soruları yanıtlayabilir, metin üretebilir, kod yazabilir, oyun oynatabilir ve sunucu yapısını yönetebilir."
 
 const BOT_IDENTITY_EN =
-  "Disogle is an AI-based Discord bot developed by Miraç Başyiğit. It can answer questions, generate text, write code, and manage server structure."
+  "Disogle is an AI-based Discord bot developed by Miraç Başyiğit. It can answer questions, generate text, write code, host games, and manage server structure."
+
+const DATA_DIR = path.join(__dirname, "data")
+const GUILD_SETTINGS_FILE = path.join(DATA_DIR, "guildSettings.json")
+const USER_MEMORY_FILE = path.join(DATA_DIR, "userMemory.json")
+
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
+
+function readJson(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) {
+      fs.writeFileSync(file, JSON.stringify(fallback, null, 2), "utf8")
+      return fallback
+    }
+    const raw = fs.readFileSync(file, "utf8")
+    return JSON.parse(raw)
+  } catch {
+    return fallback
+  }
+}
+
+function writeJson(file, data) {
+  try {
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8")
+  } catch {}
+}
+
+const persistedGuildSettings = readJson(GUILD_SETTINGS_FILE, {})
+const persistedUserMemory = readJson(USER_MEMORY_FILE, {})
 
 const repliedMessages = new Set()
 const userCooldowns = new Map()
-const userMemory = new Map()
 const greetedUsers = new Set()
+const activeGames = new Map()
+
+const riddles = [
+  {
+    questionTR: "Konuşmadan anlatırım, ağzım yoktur. Ben neyim?",
+    answerTR: "kitap",
+    questionEN: "I can tell stories without speaking. I have no mouth. What am I?",
+    answerEN: "book"
+  },
+  {
+    questionTR: "Dişlerim vardır ama ısıramam. Ben neyim?",
+    answerTR: "tarak",
+    questionEN: "I have teeth but cannot bite. What am I?",
+    answerEN: "comb"
+  },
+  {
+    questionTR: "Kırıldıkça kullanılan şey nedir?",
+    answerTR: "yumurta",
+    questionEN: "What gets used more the more it is broken?",
+    answerEN: "egg"
+  },
+  {
+    questionTR: "Kanatları yok ama uçar, ağzı yok ama söyler. Nedir?",
+    answerTR: "rüzgar",
+    questionEN: "It has no wings but flies, no mouth but whispers. What is it?",
+    answerEN: "wind"
+  }
+]
+
+const triviaTR = [
+  { q: "Türkiye'nin başkenti neresidir?", a: "ankara" },
+  { q: "Dünyanın en büyük okyanusu hangisidir?", a: "pasifik" },
+  { q: "2 + 2 x 2 kaç eder?", a: "6" },
+  { q: "Güneş sistemindeki en büyük gezegen hangisidir?", a: "jüpiter" }
+]
+
+const triviaEN = [
+  { q: "What is the capital of France?", a: "paris" },
+  { q: "Which planet is known as the Red Planet?", a: "mars" },
+  { q: "What is 2 + 2 x 2?", a: "6" },
+  { q: "What is the largest planet in the Solar System?", a: "jupiter" }
+]
+
+const wouldYouRatherTR = [
+  "Zihin okuyabilmek mi, görünmez olmak mı?",
+  "Hiç uyumamak mı, hiç para derdi çekmemek mi?",
+  "Geçmişe gitmek mi, geleceği görmek mi?",
+  "Çok zeki olmak mı, çok karizmatik olmak mı?"
+]
+
+const wouldYouRatherEN = [
+  "Would you rather read minds or become invisible?",
+  "Would you rather never need sleep or never worry about money?",
+  "Would you rather travel to the past or see the future?",
+  "Would you rather be extremely smart or extremely charismatic?"
+]
+
+function getGuildSettings(guildId) {
+  if (!persistedGuildSettings[guildId]) {
+    persistedGuildSettings[guildId] = {
+      forcedLanguage: null,
+      forcedLanguageBy: null,
+      welcomeEnabled: false,
+      welcomeChannelId: null
+    }
+    writeJson(GUILD_SETTINGS_FILE, persistedGuildSettings)
+  }
+  return persistedGuildSettings[guildId]
+}
+
+function saveGuildSettings() {
+  writeJson(GUILD_SETTINGS_FILE, persistedGuildSettings)
+}
+
+function getUserState(userId) {
+  if (!persistedUserMemory[userId]) {
+    persistedUserMemory[userId] = {
+      languageMode: "auto",
+      lastDetectedLanguage: "tr",
+      tone: "neutral",
+      recentMessages: []
+    }
+    writeJson(USER_MEMORY_FILE, persistedUserMemory)
+  }
+  return persistedUserMemory[userId]
+}
+
+function saveUserMemory() {
+  writeJson(USER_MEMORY_FILE, persistedUserMemory)
+}
+
+function saveUserMessage(userId, content) {
+  const state = getUserState(userId)
+  state.recentMessages.push(String(content || ""))
+  if (state.recentMessages.length > 8) state.recentMessages.shift()
+  saveUserMemory()
+}
 
 function normalize(text) {
   return String(text || "")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, "")
-    .replace(/\s+/g, " ")
-    .trim()
-}
-
-function slugify(input) {
-  return String(input || "")
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -57,6 +176,17 @@ function slugify(input) {
     .replace(/ş/g, "s")
     .replace(/ö/g, "o")
     .replace(/ç/g, "c")
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function compact(text) {
+  return normalize(text).replace(/\s+/g, "")
+}
+
+function slugify(input) {
+  return normalize(input)
     .replace(/[^a-z0-9\s-]/g, "")
     .trim()
     .replace(/\s+/g, "-")
@@ -69,7 +199,8 @@ function cleanMention(content, botId) {
 }
 
 function hasBotNameTrigger(content) {
-  return String(content || "").toLowerCase().includes(BOT_NAME.toLowerCase())
+  const lower = String(content || "").toLowerCase()
+  return lower.includes(BOT_NAME.toLowerCase())
 }
 
 function isReplyToBot(message) {
@@ -83,7 +214,6 @@ function isReplyToBot(message) {
 function shouldRespond(message) {
   if (message.author.bot) return false
   if (!message.guild) return false
-
   return (
     message.mentions.has(client.user) ||
     isReplyToBot(message) ||
@@ -94,13 +224,11 @@ function shouldRespond(message) {
 function isOnCooldown(userId) {
   const now = Date.now()
   const expiresAt = userCooldowns.get(userId)
-
   if (!expiresAt) return false
   if (now >= expiresAt) {
     userCooldowns.delete(userId)
     return false
   }
-
   return true
 }
 
@@ -108,28 +236,20 @@ function setCooldown(userId, ms) {
   userCooldowns.set(userId, Date.now() + ms)
 }
 
-function getUserState(userId) {
-  if (!userMemory.has(userId)) {
-    userMemory.set(userId, {
-      languageMode: "auto",
-      lastDetectedLanguage: "tr",
-      tone: "neutral",
-      recentMessages: []
-    })
-  }
-  return userMemory.get(userId)
-}
-
-function saveUserMessage(userId, content) {
-  const state = getUserState(userId)
-  state.recentMessages.push(content)
-  if (state.recentMessages.length > 6) state.recentMessages.shift()
-}
-
 function detectLanguage(text) {
   const lower = String(text || "").toLowerCase()
-  const trHints = ["merhaba", "selam", "neden", "nasıl", "kurucun", "özel", "konuş", "türkçe", "kanal", "kategori", "sil", "değiştir", "oluştur"]
-  const enHints = ["hello", "what", "why", "how", "founder", "private", "talk", "english", "channel", "category", "delete", "rename", "create"]
+
+  const trHints = [
+    "merhaba", "selam", "neden", "nasıl", "kurucun", "özel", "konuş",
+    "türkçe", "kanal", "kategori", "sil", "değiştir", "oluştur",
+    "naber", "yardım", "açıklama", "sunucu", "oyun", "bilmece"
+  ]
+
+  const enHints = [
+    "hello", "what", "why", "how", "founder", "private", "talk",
+    "english", "channel", "category", "delete", "rename", "create",
+    "server", "game", "riddle", "help", "description"
+  ]
 
   const trScore = trHints.filter(h => lower.includes(h)).length
   const enScore = enHints.filter(h => lower.includes(h)).length
@@ -140,7 +260,11 @@ function detectLanguage(text) {
   return "en"
 }
 
-function resolveLanguage(userId, text) {
+function resolveLanguage(guildId, userId, text) {
+  const guildSettings = getGuildSettings(guildId)
+  if (guildSettings.forcedLanguage === "tr") return "tr"
+  if (guildSettings.forcedLanguage === "en") return "en"
+
   const state = getUserState(userId)
 
   if (state.languageMode === "tr") return "tr"
@@ -148,38 +272,37 @@ function resolveLanguage(userId, text) {
 
   const detected = detectLanguage(text)
   state.lastDetectedLanguage = detected
+  saveUserMemory()
   return detected
 }
 
 function detectTone(text) {
   const lower = String(text || "").toLowerCase()
-
   if (lower.includes("üzgün") || lower.includes("kötü") || lower.includes("berbat") || lower.includes("sad")) return "soft"
-  if (lower.includes("haha") || lower.includes("jsjs") || lower.includes("lol") || lower.includes("lan")) return "casual"
+  if (lower.includes("haha") || lower.includes("jsjs") || lower.includes("lol") || lower.includes("gül") || lower.includes("lan")) return "casual"
   if (/[!?]{2,}/.test(text) || lower.includes("wow") || lower.includes("inanılmaz")) return "excited"
   if (lower.includes("yardım") || lower.includes("help")) return "helpful"
-
   return "neutral"
 }
 
 function getReplyProfile(text) {
   const len = String(text || "").trim().length
-  if (len <= 8) return { maxTokens: 40, style: "very_short" }
-  if (len <= 20) return { maxTokens: 70, style: "short" }
-  if (len <= 70) return { maxTokens: 140, style: "medium" }
-  return { maxTokens: 260, style: "detailed" }
+  if (len <= 8) return { maxTokens: 50, style: "very_short" }
+  if (len <= 20) return { maxTokens: 80, style: "short" }
+  if (len <= 70) return { maxTokens: 170, style: "medium" }
+  return { maxTokens: 320, style: "detailed" }
 }
 
 function isLowSignal(text) {
   const clean = normalize(text)
   if (!clean) return true
   if (clean.length <= 2) return true
-  if (/^(lan|la|hee|he|hm|hmm|ok|tamam|yo|yok|evet|hayır|xd|lol)$/i.test(clean)) return true
+  if (/^(lan|la|hee|he|hm|hmm|ok|tamam|yo|yok|evet|hayir|hayır|xd|lol)$/i.test(clean)) return true
   return false
 }
 
 function asksAboutFounder(text) {
-  const lower = String(text || "").toLowerCase()
+  const lower = normalize(text)
   return [
     "who is your founder",
     "who made you",
@@ -189,14 +312,15 @@ function asksAboutFounder(text) {
     "founder",
     "creator",
     "kurucun kim",
-    "seni kim yaptı",
-    "seni kim geliştirdi",
+    "seni kim yapti",
+    "seni kim yapti",
+    "seni kim gelistirdi",
     "kurucu kim"
-  ].some(trigger => lower.includes(trigger))
+  ].some(trigger => lower.includes(normalize(trigger)))
 }
 
 function asksWhatAreYou(text) {
-  const lower = String(text || "").toLowerCase()
+  const lower = normalize(text)
   return [
     "what are you",
     "who are you",
@@ -204,58 +328,156 @@ function asksWhatAreYou(text) {
     "what can you do",
     "sen nesin",
     "sen kimsin",
-    "ne yapıyorsun",
+    "ne yapiyorsun",
     "ne yapabiliyorsun"
-  ].some(trigger => lower.includes(trigger))
+  ].some(trigger => lower.includes(normalize(trigger)))
+}
+
+function shouldOpenPrivateTalk(text) {
+  const lower = normalize(text)
+  return [
+    "i want private talk",
+    "private talk",
+    "private session",
+    "open private session",
+    "open private talk",
+    "can we talk private",
+    "i need private help",
+    "ozel konus",
+    "ozel konusalim",
+    "seninle ozel konusabilir miyim",
+    "ozel oda ac",
+    "ozel konusma ac",
+    "private room"
+  ].some(trigger => lower.includes(normalize(trigger)))
+}
+
+function asksForGame(text) {
+  const lower = normalize(text)
+  return [
+    "oyun oynayalim",
+    "oyun baslat",
+    "bir oyun oyna",
+    "lets play",
+    "let s play",
+    "play a game",
+    "start a game",
+    "mini game",
+    "bilmece sor",
+    "trivia sor",
+    "sayi tahmin"
+  ].some(trigger => lower.includes(normalize(trigger)))
+}
+
+function chooseGame(text, language) {
+  const lower = normalize(text)
+  if (lower.includes("bilmece") || lower.includes("riddle")) return "riddle"
+  if (lower.includes("trivia")) return "trivia"
+  if (lower.includes("sayi") || lower.includes("number")) return "number"
+  if (lower.includes("would you rather") || lower.includes("hangisini secerdin")) return "wyr"
+  return language === "tr" ? "riddle" : "riddle"
 }
 
 function detectLanguageCommand(text) {
-  const lower = String(text || "").toLowerCase()
+  const lower = normalize(text)
+  const tight = compact(text)
 
-  if (
-    lower.includes("türkçe konuş") ||
-    lower.includes("turkce konus") ||
-    lower.includes("speak turkish") ||
-    lower.includes("talk in turkish") ||
-    lower.includes("reply in turkish")
-  ) {
-    return "tr"
-  }
+  const trOn = [
+    "turkce konus",
+    "turkce devam et",
+    "reply in turkish",
+    "speak turkish",
+    "talk in turkish",
+    "sunucuda turkce konus",
+    "bu sunucuda turkce konus"
+  ]
 
-  if (
-    lower.includes("ingilizce konuş") ||
-    lower.includes("ingilizce konus") ||
-    lower.includes("speak english") ||
-    lower.includes("talk in english") ||
-    lower.includes("reply in english")
-  ) {
-    return "en"
-  }
+  const enOn = [
+    "ingilizce konus",
+    "ingilizce devam et",
+    "reply in english",
+    "speak english",
+    "talk in english",
+    "sunucuda ingilizce konus",
+    "bu sunucuda ingilizce konus"
+  ]
 
-  if (
-    lower.includes("türkçe konuşmayı bırak") ||
-    lower.includes("ingilizce konuşmayı bırak") ||
-    lower.includes("normal konuş") ||
-    lower.includes("otomatik konuş") ||
-    lower.includes("auto language") ||
-    lower.includes("automatic language") ||
-    lower.includes("return to auto language")
-  ) {
-    return "auto"
-  }
+  const auto = [
+    "turkce konusmayi birak",
+    "ingilizce konusmayi birak",
+    "normal konus",
+    "otomatik konus",
+    "oto dil",
+    "auto language",
+    "automatic language",
+    "return to auto language",
+    "dil kilidini kaldir",
+    "sunucu dil kilidini kaldir"
+  ]
+
+  if (trOn.some(x => lower.includes(normalize(x)) || tight.includes(compact(x)))) return "tr"
+  if (enOn.some(x => lower.includes(normalize(x)) || tight.includes(compact(x)))) return "en"
+  if (auto.some(x => lower.includes(normalize(x)) || tight.includes(compact(x)))) return "auto"
+  return null
+}
+
+function isServerLanguageCommand(text) {
+  const lower = normalize(text)
+  return [
+    "sunucuda turkce konus",
+    "bu sunucuda turkce konus",
+    "server speak turkish",
+    "speak turkish in this server",
+    "sunucuda ingilizce konus",
+    "bu sunucuda ingilizce konus",
+    "server speak english",
+    "speak english in this server",
+    "sunucu dil kilidini kaldir",
+    "dil kilidini kaldir"
+  ].some(x => lower.includes(normalize(x)))
+}
+
+function getGameControlIntent(text) {
+  const lower = normalize(text)
+
+  if (["ipucu", "hint", "bir ipucu", "1 harf", "bir harf daha", "1 harf daha", "harf ver"].some(x => lower.includes(normalize(x)))) return "hint"
+  if (["bilemedim", "cevap ne", "cevabi soyle", "cevabı söyle", "cevabı söyler misin", "answer", "what was it", "tell me the answer"].some(x => lower.includes(normalize(x)))) return "answer"
+  if (["gec", "geç", "pas", "skip", "next"].some(x => lower.includes(normalize(x)))) return "skip"
+  if (["oyunu kapat", "oyun bitsin", "oyunu bitir", "dur", "stop game", "stop", "end game"].some(x => lower.includes(normalize(x)))) return "stop"
 
   return null
 }
 
+function randomItem(arr) {
+  return arr[Math.floor(Math.random() * arr.length)]
+}
+
+function createGame(channelId, game) {
+  activeGames.set(channelId, game)
+}
+
+function clearGame(channelId) {
+  activeGames.delete(channelId)
+}
+
+function getGame(channelId) {
+  return activeGames.get(channelId)
+}
+
+function getHint(game) {
+  const a = String(game.answer)
+  if (a.length <= 1) return a
+  if (a.length === 2) return `${a[0]}_`
+  if (a.length === 3) return `${a[0]}${a[1]}_`
+  return `${a.slice(0, 2)}${"_".repeat(a.length - 2)}`
+}
+
 function buildStyleInstruction(language, tone, replyStyle) {
-  const langPart =
-    language === "tr"
-      ? "Reply in natural Turkish."
-      : "Reply in natural English."
+  const langPart = language === "tr" ? "Reply in natural Turkish." : "Reply in natural English."
 
   const toneMap = {
-    excited: "Match excitement only if it is truly present. Do not overact.",
-    soft: "Be softer and calmer.",
+    excited: "Match excitement if it is naturally present but do not overact.",
+    soft: "Be softer, calmer and more understanding.",
     casual: "Be natural and casual, but not childish.",
     helpful: "Be practical and focused.",
     neutral: "Stay calm, balanced and natural."
@@ -268,7 +490,7 @@ function buildStyleInstruction(language, tone, replyStyle) {
     detailed: "Be more detailed, but stay readable."
   }
 
-  return `${langPart} ${toneMap[tone]} ${sizeMap[replyStyle]} Use emojis only when they fit naturally.`
+  return `${langPart} ${toneMap[tone]} ${sizeMap[replyStyle]} Sound human, warm and confident. Do not say you are an AI unless asked. Do not ask repetitive follow-up questions.`
 }
 
 function safeJsonParse(text) {
@@ -285,15 +507,12 @@ function safeJsonParse(text) {
   }
 }
 
-function toDiscordChannelType(type) {
-  const t = String(type || "").toLowerCase()
-  if (t === "voice" || t === "ses") return ChannelType.GuildVoice
-  if (t === "forum") return ChannelType.GuildForum
-  return ChannelType.GuildText
-}
-
 function hasAdminAccess(member) {
   return member.permissions.has(PermissionFlagsBits.Administrator)
+}
+
+function isOwner(member) {
+  return member.guild.ownerId === member.id
 }
 
 function botCanManage(guild) {
@@ -302,9 +521,49 @@ function botCanManage(guild) {
   return me.permissions.has(PermissionFlagsBits.ManageChannels)
 }
 
+function botCanManageRolesEnough(guild) {
+  const me = guild.members.me
+  if (!me) return false
+  return me.permissions.has(PermissionFlagsBits.ManageRoles)
+}
+
 function getRoleByName(guild, roleName) {
   const target = normalize(roleName).replace(/^@/, "")
   return guild.roles.cache.find(r => normalize(r.name) === target)
+}
+
+function findCategoryByName(guild, name) {
+  const target = normalize(name)
+  return guild.channels.cache.find(
+    c => c.type === ChannelType.GuildCategory && normalize(c.name) === target
+  )
+}
+
+function findAnyChannelByName(guild, name) {
+  const target = normalize(name)
+  return guild.channels.cache.find(
+    c => c.type !== ChannelType.GuildCategory && normalize(c.name) === target
+  )
+}
+
+function findChannelInCategoryByName(guild, categoryName, channelName) {
+  const category = findCategoryByName(guild, categoryName)
+  if (!category) return null
+  const target = normalize(channelName)
+
+  return guild.channels.cache.find(
+    c =>
+      c.parentId === category.id &&
+      c.type !== ChannelType.GuildCategory &&
+      normalize(c.name) === target
+  )
+}
+
+function toDiscordChannelType(type) {
+  const t = normalize(type)
+  if (t === "voice" || t === "ses") return ChannelType.GuildVoice
+  if (t === "forum") return ChannelType.GuildForum
+  return ChannelType.GuildText
 }
 
 function buildPermissionOverwrites(guild, permissions, requesterId) {
@@ -341,33 +600,6 @@ function buildPermissionOverwrites(guild, permissions, requesterId) {
   return overwrites
 }
 
-function findCategoryByName(guild, name) {
-  const target = normalize(name)
-  return guild.channels.cache.find(
-    c => c.type === ChannelType.GuildCategory && normalize(c.name) === target
-  )
-}
-
-function findAnyChannelByName(guild, name) {
-  const target = normalize(name)
-  return guild.channels.cache.find(
-    c => c.type !== ChannelType.GuildCategory && normalize(c.name) === target
-  )
-}
-
-function findChannelInCategoryByName(guild, categoryName, channelName) {
-  const category = findCategoryByName(guild, categoryName)
-  if (!category) return null
-  const target = normalize(channelName)
-
-  return guild.channels.cache.find(
-    c =>
-      c.parentId === category.id &&
-      c.type !== ChannelType.GuildCategory &&
-      normalize(c.name) === target
-  )
-}
-
 function uniqueChannelName(guild, parentId, desiredName, type) {
   const base = slugify(desiredName) || "kanal"
   let name = base
@@ -386,7 +618,7 @@ function uniqueChannelName(guild, parentId, desiredName, type) {
 }
 
 function defaultChannelsForCategory(name, language) {
-  const lower = String(name || "").toLowerCase()
+  const lower = normalize(name)
 
   if (lower.includes("core") || lower.includes("ana")) {
     return language === "tr"
@@ -395,14 +627,30 @@ function defaultChannelsForCategory(name, language) {
           { name: "duyurular", type: "text", topic: "Önemli sunucu duyuruları." },
           { name: "kurallar", type: "text", topic: "Sunucu kuralları ve rehberler." },
           { name: "destek", type: "text", topic: "Yardım ve destek talepleri." },
-          { name: "sohbet", type: "voice" }
+          { name: "lounge", type: "text", topic: "Rahat topluluk sohbeti." },
+          { name: "sesli-sohbet", type: "voice" }
         ]
       : [
           { name: "general", type: "text", topic: "Main conversations and community chat." },
           { name: "announcements", type: "text", topic: "Important server announcements." },
           { name: "rules", type: "text", topic: "Server rules and guidance." },
           { name: "support", type: "text", topic: "Help and support requests." },
+          { name: "lounge", type: "text", topic: "Casual community chat." },
           { name: "voice-chat", type: "voice" }
+        ]
+  }
+
+  if (lower.includes("owner") || lower.includes("kurucu")) {
+    return language === "tr"
+      ? [
+          { name: "owner-chat", type: "text", topic: "Kurucu ve yönetim konuşmaları." },
+          { name: "owner-notes", type: "text", topic: "Önemli kısa notlar." },
+          { name: "owner-voice", type: "voice" }
+        ]
+      : [
+          { name: "owner-chat", type: "text", topic: "Founder and management conversations." },
+          { name: "owner-notes", type: "text", topic: "Important quick notes." },
+          { name: "owner-voice", type: "voice" }
         ]
   }
 
@@ -414,12 +662,369 @@ function defaultChannelsForCategory(name, language) {
       ]
     : [
         { name: "general", type: "text", topic: `General channel for ${name}.` },
-        { name: "sharing", type: "text", topic: `Sharing space for ${name}.` },
+        { name: "sharing", type: "text", topic: `Sharing area for ${name}.` },
         { name: "voice-chat", type: "voice" }
       ]
 }
 
-async function detectManagementPlan(question, language) {
+function manualIntentParser(text, language) {
+  const lower = normalize(text)
+  const operations = []
+
+  function extractCategoryAfterKeyword(keyword) {
+    const idx = lower.indexOf(normalize(keyword))
+    if (idx === -1) return null
+    const tail = lower.slice(idx + normalize(keyword).length).trim()
+    const pieces = tail.split(" ")
+    if (!pieces.length) return null
+    return pieces.slice(0, 3).join(" ").trim()
+  }
+
+  const createCategoryTriggers = [
+    "kategori olustur",
+    "kategori ac",
+    "category create",
+    "create category"
+  ]
+
+  const deleteCategoryTriggers = [
+    "kategori sil",
+    "category delete",
+    "delete category"
+  ]
+
+  const createChannelTriggers = [
+    "kanal olustur",
+    "kanal ac",
+    "create channel",
+    "open channel"
+  ]
+
+  const deleteChannelTriggers = [
+    "kanal sil",
+    "delete channel"
+  ]
+
+  if (
+    lower.includes("mantikli kanallar") ||
+    lower.includes("sensible channels") ||
+    lower.includes("uygun kanallar") ||
+    lower.includes("mantikli olanlari ac")
+  ) {
+    const m = lower.match(/([a-z0-9ğüşöçı\s-]+?) adinda kategori/)
+    if (m?.[1]) {
+      operations.push({
+        type: "create_category",
+        categoryName: m[1].trim(),
+        newCategoryName: null,
+        channelName: null,
+        newChannelName: null,
+        channelType: null,
+        topic: null,
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: true,
+        permissions: []
+      })
+    }
+  }
+
+  if (lower.includes("tum kanallarin ismini") || lower.includes("all channel names")) {
+    const categoryMatch = lower.match(/bu kategorideki|this category|(.+?) kategorisindeki/)
+    const nameMatch = lower.match(/ismini\s+([a-z0-9ğüşöçı\s-]+)\s+yap|name(?:s)?\s+to\s+([a-z0-9\s-]+)/)
+    let categoryName = null
+
+    const namedCat = lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisindeki tum kanallar/)
+    if (namedCat?.[1]) categoryName = namedCat[1].trim()
+    if (!categoryName && categoryMatch && !lower.includes("bu kategorideki")) categoryName = categoryMatch[1]?.trim() || null
+
+    let baseName = null
+    if (nameMatch) baseName = (nameMatch[1] || nameMatch[2] || "").trim()
+
+    if (baseName) {
+      operations.push({
+        type: "rename_all_channels_in_category",
+        categoryName,
+        newCategoryName: null,
+        channelName: null,
+        newChannelName: null,
+        channelType: null,
+        topic: null,
+        targetCategoryName: null,
+        baseName,
+        applySensibleDefaults: false,
+        permissions: []
+      })
+    }
+  }
+
+  if (
+    lower.includes("aciklamasini degistir") ||
+    lower.includes("açıklamasını değiştir") ||
+    lower.includes("description change") ||
+    lower.includes("change topic")
+  ) {
+    const catMatch = lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisindeki/)
+    const topicMatch =
+      lower.match(/aciklamasini\s+(.+?)\s+yap/) ||
+      lower.match(/açıklamasını\s+(.+?)\s+yap/) ||
+      lower.match(/topic to\s+(.+)/)
+
+    if (catMatch?.[1] && topicMatch?.[1]) {
+      operations.push({
+        type: "set_all_channel_topics_in_category",
+        categoryName: catMatch[1].trim(),
+        newCategoryName: null,
+        channelName: null,
+        newChannelName: null,
+        channelType: null,
+        topic: topicMatch[1].trim(),
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: false,
+        permissions: []
+      })
+    }
+  }
+
+  for (const trigger of createCategoryTriggers) {
+    if (lower.includes(normalize(trigger))) {
+      const m =
+        lower.match(/([a-z0-9ğüşöçı\s-]+?) adinda kategori/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?) isminde kategori/) ||
+        lower.match(/kategori\s+([a-z0-9ğüşöçı\s-]+)/) ||
+        lower.match(/category\s+([a-z0-9\s-]+)/)
+
+      if (m?.[1]) {
+        const categoryName = m[1].trim()
+        operations.push({
+          type: "create_category",
+          categoryName,
+          newCategoryName: null,
+          channelName: null,
+          newChannelName: null,
+          channelType: null,
+          topic: null,
+          targetCategoryName: null,
+          baseName: null,
+          applySensibleDefaults: lower.includes("mantikli") || lower.includes("uygun") || lower.includes("sensible"),
+          permissions: []
+        })
+      }
+      break
+    }
+  }
+
+  for (const trigger of deleteCategoryTriggers) {
+    if (lower.includes(normalize(trigger))) {
+      const m =
+        lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisini sil/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?) kategoriyi sil/) ||
+        lower.match(/delete category\s+([a-z0-9\s-]+)/)
+
+      if (m?.[1]) {
+        operations.push({
+          type: "delete_category",
+          categoryName: m[1].trim(),
+          newCategoryName: null,
+          channelName: null,
+          newChannelName: null,
+          channelType: null,
+          topic: null,
+          targetCategoryName: null,
+          baseName: null,
+          applySensibleDefaults: false,
+          permissions: []
+        })
+      }
+      break
+    }
+  }
+
+  for (const trigger of createChannelTriggers) {
+    if (lower.includes(normalize(trigger))) {
+      const channelMatches = []
+      const regex = /([a-z0-9ğüşöçı\s-]+?) kanal(?:i|ı|ini|ını)?/g
+      let found
+      while ((found = regex.exec(lower)) !== null) {
+        const val = found[1].trim()
+        if (
+          val &&
+          !val.includes("kategori") &&
+          !val.includes("yeni") &&
+          !val.includes("tum") &&
+          !val.includes("tüm")
+        ) {
+          channelMatches.push(val)
+        }
+      }
+
+      const catMatch =
+        lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisine/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisinde/) ||
+        lower.match(/under category\s+([a-z0-9\s-]+)/)
+
+      if (channelMatches.length) {
+        for (const chName of channelMatches) {
+          operations.push({
+            type: "create_channel",
+            categoryName: catMatch?.[1]?.trim() || null,
+            newCategoryName: null,
+            channelName: chName,
+            newChannelName: null,
+            channelType: lower.includes("ses") || lower.includes("voice") ? "voice" : "text",
+            topic: null,
+            targetCategoryName: null,
+            baseName: null,
+            applySensibleDefaults: false,
+            permissions: []
+          })
+        }
+      }
+      break
+    }
+  }
+
+  for (const trigger of deleteChannelTriggers) {
+    if (lower.includes(normalize(trigger))) {
+      const m =
+        lower.match(/([a-z0-9ğüşöçı\s-]+?) kanalini sil/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?) kanalını sil/) ||
+        lower.match(/delete channel\s+([a-z0-9\s-]+)/)
+
+      if (m?.[1]) {
+        operations.push({
+          type: "delete_channel",
+          categoryName: null,
+          newCategoryName: null,
+          channelName: m[1].trim(),
+          newChannelName: null,
+          channelType: null,
+          topic: null,
+          targetCategoryName: null,
+          baseName: null,
+          applySensibleDefaults: false,
+          permissions: []
+        })
+      }
+      break
+    }
+  }
+
+  if (lower.includes("kanal adini degistir") || lower.includes("kanal adını değiştir") || lower.includes("rename channel")) {
+    const m =
+      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:inin|in|ıni|ini)? adini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) ||
+      lower.match(/rename channel\s+([a-z0-9\s-]+)\s+to\s+([a-z0-9\s-]+)/)
+    if (m?.[1] && m?.[2]) {
+      operations.push({
+        type: "rename_channel",
+        categoryName: null,
+        newCategoryName: null,
+        channelName: m[1].trim(),
+        newChannelName: m[2].trim(),
+        channelType: null,
+        topic: null,
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: false,
+        permissions: []
+      })
+    }
+  }
+
+  if (lower.includes("kategori adini degistir") || lower.includes("kategori adını değiştir") || lower.includes("rename category")) {
+    const m =
+      lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisinin adini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) ||
+      lower.match(/rename category\s+([a-z0-9\s-]+)\s+to\s+([a-z0-9\s-]+)/)
+    if (m?.[1] && m?.[2]) {
+      operations.push({
+        type: "rename_category",
+        categoryName: m[1].trim(),
+        newCategoryName: m[2].trim(),
+        channelName: null,
+        newChannelName: null,
+        channelType: null,
+        topic: null,
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: false,
+        permissions: []
+      })
+    }
+  }
+
+  if (lower.includes("kanal aciklamasini degistir") || lower.includes("kanal açıklamasını değiştir") || lower.includes("change channel topic")) {
+    const m =
+      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:inin|in|ıni|ini)? aciklamasini\s+(.+?)\s+yap/) ||
+      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:inin|in|ıni|ini)? açıklamasını\s+(.+?)\s+yap/) ||
+      lower.match(/change channel topic\s+([a-z0-9\s-]+)\s+to\s+(.+)/)
+    if (m?.[1] && m?.[2]) {
+      operations.push({
+        type: "set_channel_topic",
+        categoryName: null,
+        newCategoryName: null,
+        channelName: m[1].trim(),
+        newChannelName: null,
+        channelType: null,
+        topic: m[2].trim(),
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: false,
+        permissions: []
+      })
+    }
+  }
+
+  if (lower.includes("kanali tasi") || lower.includes("kanalı taşı") || lower.includes("move channel")) {
+    const m =
+      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:ini|ını)?\s+([a-z0-9ğüşöçı\s-]+?) kategorisine tasi/) ||
+      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:ini|ını)?\s+([a-z0-9ğüşöçı\s-]+?) kategorisine taşı/) ||
+      lower.match(/move channel\s+([a-z0-9\s-]+)\s+to\s+([a-z0-9\s-]+)/)
+    if (m?.[1] && m?.[2]) {
+      operations.push({
+        type: "move_channel",
+        categoryName: null,
+        newCategoryName: null,
+        channelName: m[1].trim(),
+        newChannelName: null,
+        channelType: null,
+        topic: null,
+        targetCategoryName: m[2].trim(),
+        baseName: null,
+        applySensibleDefaults: false,
+        permissions: []
+      })
+    }
+  }
+
+  if (
+    lower.includes("tum kategori ve kanallari sil") ||
+    lower.includes("tüm kategori ve kanalları sil") ||
+    lower.includes("delete all categories and channels")
+  ) {
+    operations.push({
+      type: "delete_all_structure",
+      categoryName: null,
+      newCategoryName: null,
+      channelName: null,
+      newChannelName: null,
+      channelType: null,
+      topic: null,
+      targetCategoryName: null,
+      baseName: null,
+      applySensibleDefaults: false,
+      permissions: []
+    })
+  }
+
+  if (!operations.length) {
+    return { isManagementRequest: false, operations: [] }
+  }
+
+  return { isManagementRequest: true, operations }
+}
+
+async function aiIntentParser(question, language) {
   const prompt = `
 You are a Discord server management intent parser.
 Return ONLY valid JSON.
@@ -429,7 +1034,7 @@ Schema:
   "isManagementRequest": boolean,
   "operations": [
     {
-      "type": "create_category" | "delete_category" | "rename_category" | "create_channel" | "delete_channel" | "rename_channel" | "set_channel_topic" | "move_channel" | "rename_all_channels_in_category" | "set_all_channel_topics_in_category",
+      "type": "create_category" | "delete_category" | "rename_category" | "create_channel" | "delete_channel" | "rename_channel" | "set_channel_topic" | "move_channel" | "rename_all_channels_in_category" | "set_all_channel_topics_in_category" | "delete_all_structure",
       "categoryName": string | null,
       "newCategoryName": string | null,
       "channelName": string | null,
@@ -451,14 +1056,15 @@ Schema:
 }
 
 Rules:
-- If the user asks to create a category and "make sensible channels", use applySensibleDefaults true.
-- If the user explicitly names channels, create separate create_channel operations.
-- If the user asks to rename all channels in a category to one name, use rename_all_channels_in_category with baseName.
-- If the user asks to change explanations/descriptions for channels in a category, use set_all_channel_topics_in_category with topic.
-- If unrelated to management, return isManagementRequest false and operations [].
+- If the user wants server structure changes, set isManagementRequest true.
+- If the user asks for sensible channels, set applySensibleDefaults true.
+- If the user asks to rename all channels in a category to one base name, use rename_all_channels_in_category.
+- If the user asks to change all text channel descriptions in a category, use set_all_channel_topics_in_category.
+- If the user asks to delete everything, use delete_all_structure.
 - Use Discord.js PermissionFlagsBits names only.
-- Keep operations minimal and precise.
 - Return JSON only.
+- Keep the operation list precise and minimal.
+- If the message is normal conversation, return false and empty operations.
 
 User message:
 ${question}
@@ -468,9 +1074,9 @@ ${language}
 `
 
   const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: 0.15,
-    max_tokens: 500,
+    model: MODEL,
+    temperature: 0.1,
+    max_tokens: 600,
     messages: [
       { role: "system", content: "Return only valid JSON." },
       { role: "user", content: prompt }
@@ -485,6 +1091,239 @@ ${language}
   }
 
   return parsed
+}
+
+async function detectManagementPlan(question, language) {
+  const manual = manualIntentParser(question, language)
+  if (manual.isManagementRequest) return manual
+
+  try {
+    const ai = await aiIntentParser(question, language)
+    if (ai.isManagementRequest) return ai
+  } catch {}
+
+  return { isManagementRequest: false, operations: [] }
+}
+
+async function createPrivateChannel(message, language) {
+  const guild = message.guild
+  const member = message.member
+
+  if (!botCanManage(guild)) {
+    await message.reply(
+      language === "tr"
+        ? "Özel oda açabilmem için Manage Channels yetkisine ihtiyacım var."
+        : "I need Manage Channels permission to open a private room."
+    )
+    return
+  }
+
+  const safeName = slugify(member.user.username).slice(0, 20) || "user"
+  const channelName = `private-${safeName}`
+
+  const existing = guild.channels.cache.find(
+    channel =>
+      channel.type === ChannelType.GuildText &&
+      channel.name === channelName
+  )
+
+  if (existing) {
+    await message.reply(
+      language === "tr"
+        ? `Zaten açık bir özel odan var: ${existing}`
+        : `You already have an active private room: ${existing}`
+    )
+    return
+  }
+
+  const privateChannel = await guild.channels.create({
+    name: channelName,
+    type: ChannelType.GuildText,
+    permissionOverwrites: [
+      {
+        id: guild.roles.everyone.id,
+        type: OverwriteType.Role,
+        deny: [PermissionFlagsBits.ViewChannel]
+      },
+      {
+        id: member.id,
+        type: OverwriteType.Member,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory
+        ]
+      },
+      {
+        id: client.user.id,
+        type: OverwriteType.Member,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory,
+          PermissionFlagsBits.ManageChannels
+        ]
+      }
+    ]
+  })
+
+  await privateChannel.send(
+    language === "tr"
+      ? `Merhaba ${member}, özel konuşma odan hazır. Hazırsan yaz, ben buradayım.`
+      : `Hey ${member}, your private room is ready. Send a message whenever you're ready.`
+  )
+
+  await message.reply(
+    language === "tr"
+      ? `Özel odan hazır: ${privateChannel}`
+      : `Your private room is ready: ${privateChannel}`
+  )
+}
+
+async function startGame(message, language, gameType) {
+  if (gameType === "riddle") {
+    const riddle = randomItem(riddles)
+    createGame(message.channel.id, {
+      type: "riddle",
+      language,
+      answer: language === "tr" ? riddle.answerTR : riddle.answerEN
+    })
+
+    await message.reply(
+      language === "tr"
+        ? `Bilmece zamanı:\n${riddle.questionTR}\n\nİstersen ipucu isteyebilir, geçebilir ya da cevabı sorabilirsin.`
+        : `Riddle time:\n${riddle.questionEN}\n\nYou can ask for a hint, skip, or ask for the answer.`
+    )
+    return
+  }
+
+  if (gameType === "trivia") {
+    const trivia = language === "tr" ? randomItem(triviaTR) : randomItem(triviaEN)
+    createGame(message.channel.id, {
+      type: "trivia",
+      language,
+      answer: trivia.a
+    })
+
+    await message.reply(
+      language === "tr"
+        ? `Soru:\n${trivia.q}\n\nİstersen ipucu isteyebilir, geçebilir ya da cevabı sorabilirsin.`
+        : `Trivia:\n${trivia.q}\n\nYou can ask for a hint, skip, or ask for the answer.`
+    )
+    return
+  }
+
+  if (gameType === "number") {
+    const target = String(Math.floor(Math.random() * 10) + 1)
+    createGame(message.channel.id, {
+      type: "number",
+      language,
+      answer: target
+    })
+
+    await message.reply(
+      language === "tr"
+        ? "1 ile 10 arasında bir sayı tuttum. Tahmin et. İstersen geçebilir ya da cevabı sorabilirsin."
+        : "I picked a number between 1 and 10. Guess it. You can skip or ask for the answer."
+    )
+    return
+  }
+
+  if (gameType === "wyr") {
+    const q = language === "tr" ? randomItem(wouldYouRatherTR) : randomItem(wouldYouRatherEN)
+    await message.reply(q)
+  }
+}
+
+async function handleGameMessage(message, game) {
+  const language = game.language
+  const content = message.content
+
+  if (shouldOpenPrivateTalk(content)) {
+    clearGame(message.channel.id)
+    return "handoff_private"
+  }
+
+  if (asksAboutFounder(content)) {
+    clearGame(message.channel.id)
+    return "handoff_founder"
+  }
+
+  if (asksWhatAreYou(content)) {
+    clearGame(message.channel.id)
+    return "handoff_identity"
+  }
+
+  if (asksForGame(content)) {
+    clearGame(message.channel.id)
+    return "handoff_new_game"
+  }
+
+  const langCmd = detectLanguageCommand(content)
+  if (langCmd) {
+    clearGame(message.channel.id)
+    return "handoff_language"
+  }
+
+  const control = getGameControlIntent(content)
+
+  if (control === "hint") {
+    await message.reply(language === "tr" ? `İpucu: ${getHint(game)}` : `Hint: ${getHint(game)}`)
+    return "handled"
+  }
+
+  if (control === "answer") {
+    clearGame(message.channel.id)
+    await message.reply(
+      language === "tr"
+        ? `Cevap: ${game.answer}. İstersen yeni bir oyun başlatabiliriz.`
+        : `The answer was: ${game.answer}. We can start a new game if you want.`
+    )
+    return "handled"
+  }
+
+  if (control === "skip") {
+    clearGame(message.channel.id)
+    await message.reply(
+      language === "tr"
+        ? "Tamam, bunu geçiyorum. İstersen yeni bir oyun başlatabiliriz."
+        : "Alright, skipping this one. We can start a new game if you want."
+    )
+    return "handled"
+  }
+
+  if (control === "stop") {
+    clearGame(message.channel.id)
+    await message.reply(language === "tr" ? "Tamam, oyunu kapattım." : "Alright, I ended the game.")
+    return "handled"
+  }
+
+  const answer = normalize(content)
+  if (answer === normalize(game.answer)) {
+    clearGame(message.channel.id)
+    await message.reply(language === "tr" ? "Doğru bildin. Güzel oynadın." : "Correct. Nice one.")
+    return "handled"
+  }
+
+  if (game.type === "number" && /^\d+$/.test(answer)) {
+    await message.reply(
+      language === "tr"
+        ? "Olmadı. Bir daha dene, ya da geç diyebilirsin."
+        : "Not that one. Try again, or say skip."
+    )
+    return "handled"
+  }
+
+  if ((game.type === "trivia" || game.type === "riddle") && answer.length > 0) {
+    await message.reply(
+      language === "tr"
+        ? "Henüz doğru değil. İstersen ipucu al, geç ya da cevabı sor."
+        : "Not correct yet. You can ask for a hint, skip, or ask for the answer."
+    )
+    return "handled"
+  }
+
+  return "handled"
 }
 
 async function executeManagementPlan(message, plan, language) {
@@ -515,8 +1354,7 @@ async function executeManagementPlan(message, plan, language) {
     try {
       if (op.type === "create_category") {
         const rawName = op.categoryName || (language === "tr" ? "Yeni Kategori" : "New Category")
-        const existing = findCategoryByName(guild, rawName)
-        let category = existing
+        let category = findCategoryByName(guild, rawName)
 
         if (!category) {
           const permissionOverwrites = buildPermissionOverwrites(guild, op.permissions, member.id)
@@ -527,12 +1365,11 @@ async function executeManagementPlan(message, plan, language) {
           })
           results.push(language === "tr" ? `Kategori oluşturuldu: ${category}` : `Created category: ${category.name}`)
         } else {
-          results.push(language === "tr" ? `Kategori zaten vardı: ${existing}` : `Category already existed: ${existing.name}`)
+          results.push(language === "tr" ? `Kategori zaten vardı: ${category}` : `Category already existed: ${category.name}`)
         }
 
         if (op.applySensibleDefaults) {
           const defaults = defaultChannelsForCategory(rawName, language)
-
           for (const ch of defaults) {
             const type = toDiscordChannelType(ch.type)
             const uniqueName = uniqueChannelName(guild, category.id, ch.name, type)
@@ -689,9 +1526,17 @@ async function executeManagementPlan(message, plan, language) {
       }
 
       if (op.type === "rename_all_channels_in_category") {
-        const category = findCategoryByName(guild, op.categoryName)
+        let category = null
+
+        if (op.categoryName) {
+          category = findCategoryByName(guild, op.categoryName)
+        } else {
+          const current = message.channel.parentId ? guild.channels.cache.get(message.channel.parentId) : null
+          if (current?.type === ChannelType.GuildCategory) category = current
+        }
+
         if (!category) {
-          results.push(language === "tr" ? `Kategori bulunamadı: ${op.categoryName}` : `Category not found: ${op.categoryName}`)
+          results.push(language === "tr" ? `Kategori bulunamadı.` : `Category not found.`)
         } else {
           const children = guild.channels.cache
             .filter(c => c.parentId === category.id && c.type !== ChannelType.GuildCategory)
@@ -701,8 +1546,8 @@ async function executeManagementPlan(message, plan, language) {
             results.push(language === "tr" ? `Kategoride kanal yok: ${category.name}` : `No channels in category: ${category.name}`)
           } else {
             let index = 1
+            const base = slugify(op.baseName || "kanal") || "kanal"
             for (const [, ch] of children) {
-              const base = slugify(op.baseName || "kanal")
               const nextName = index === 1 ? base : `${base}-${index}`
               await ch.setName(nextName)
               index++
@@ -713,16 +1558,20 @@ async function executeManagementPlan(message, plan, language) {
       }
 
       if (op.type === "set_all_channel_topics_in_category") {
-        const category = findCategoryByName(guild, op.categoryName)
+        let category = null
+
+        if (op.categoryName) {
+          category = findCategoryByName(guild, op.categoryName)
+        } else {
+          const current = message.channel.parentId ? guild.channels.cache.get(message.channel.parentId) : null
+          if (current?.type === ChannelType.GuildCategory) category = current
+        }
+
         if (!category) {
-          results.push(language === "tr" ? `Kategori bulunamadı: ${op.categoryName}` : `Category not found: ${op.categoryName}`)
+          results.push(language === "tr" ? `Kategori bulunamadı.` : `Category not found.`)
         } else {
           const children = guild.channels.cache
-            .filter(
-              c =>
-                c.parentId === category.id &&
-                (c.type === ChannelType.GuildText || c.type === ChannelType.GuildForum)
-            )
+            .filter(c => c.parentId === category.id && (c.type === ChannelType.GuildText || c.type === ChannelType.GuildForum))
             .sort((a, b) => a.rawPosition - b.rawPosition)
 
           if (!children.size) {
@@ -735,12 +1584,37 @@ async function executeManagementPlan(message, plan, language) {
           }
         }
       }
+
+      if (op.type === "delete_all_structure") {
+        if (!isOwner(member)) {
+          results.push(
+            language === "tr"
+              ? "Tüm kategori ve kanalları silme işlemi sadece sunucu sahibi tarafından kullanılabilir."
+              : "Deleting all categories and channels can only be used by the server owner."
+          )
+        } else {
+          const channels = guild.channels.cache
+            .filter(c => c.id !== message.channel.id)
+            .sort((a, b) => (b.parentId ? 1 : 0) - (a.parentId ? 1 : 0))
+
+          for (const [, ch] of channels) {
+            try {
+              await ch.delete()
+            } catch {}
+          }
+
+          results.push(
+            language === "tr"
+              ? "Mevcut kanal hariç tüm kategori ve kanallar silinmeye çalışıldı."
+              : "All categories and channels except the current channel were attempted to be deleted."
+          )
+        }
+      }
     } catch (err) {
-      const label = op.type || "unknown"
       results.push(
         language === "tr"
-          ? `İşlem başarısız: ${label}`
-          : `Operation failed: ${label}`
+          ? `İşlem başarısız: ${op.type}`
+          : `Operation failed: ${op.type}`
       )
     }
   }
@@ -748,7 +1622,7 @@ async function executeManagementPlan(message, plan, language) {
   if (!results.length) {
     await message.reply(
       language === "tr"
-        ? "Yönetim işlemi algıladım ama uygulanacak net bir adım çıkaramadım."
+        ? "Yönetim isteğini algıladım ama net işlem çıkaramadım."
         : "I detected a management request but could not extract a clear action."
     )
     return true
@@ -756,6 +1630,80 @@ async function executeManagementPlan(message, plan, language) {
 
   await message.reply(results.join("\n"))
   return true
+}
+
+async function handleServerLanguageMode(message, mode) {
+  const guildSettings = getGuildSettings(message.guild.id)
+  const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+
+  if (!hasAdminAccess(message.member)) {
+    await message.reply(
+      language === "tr"
+        ? "Sunucu dili ayarını sadece yönetici değiştirebilir."
+        : "Only an administrator can change the server language setting."
+    )
+    return true
+  }
+
+  if (mode === "tr") {
+    guildSettings.forcedLanguage = "tr"
+    guildSettings.forcedLanguageBy = message.author.id
+    saveGuildSettings()
+    await message.reply("Tamam, bu sunucuda ben artık Türkçe konuşacağım. Bunu sadece yönetici kaldırabilir.")
+    return true
+  }
+
+  if (mode === "en") {
+    guildSettings.forcedLanguage = "en"
+    guildSettings.forcedLanguageBy = message.author.id
+    saveGuildSettings()
+    await message.reply("Alright, I will now speak English in this server until an admin changes it.")
+    return true
+  }
+
+  guildSettings.forcedLanguage = null
+  guildSettings.forcedLanguageBy = null
+  saveGuildSettings()
+  await message.reply(
+    language === "tr"
+      ? "Tamam, sunucu dil kilidini kaldırdım. Yeniden otomatik dil algısına döndüm."
+      : "Alright, I removed the server language lock and returned to automatic language detection."
+  )
+  return true
+}
+
+async function getChatReply(question, language, tone, replyProfile, userState, firstTime, guildSettings) {
+  const recent = userState.recentMessages.slice(-6).join("\n")
+  const styleInstruction = buildStyleInstruction(language, tone, replyProfile.style)
+
+  const response = await openai.chat.completions.create({
+    model: MODEL,
+    temperature: 0.72,
+    max_tokens: replyProfile.maxTokens,
+    messages: [
+      {
+        role: "system",
+        content:
+          `You are ${BOT_NAME}, a powerful Discord AI developed by ${FOUNDER_NAME}. You can answer questions, generate text, write code, help with decisions, host mini games, manage server structure, and talk like a natural human assistant. You are warm, sharp, socially aware, and concise by default. If asked who you are, you may say: "${BOT_IDENTITY_EN}" If asked about your founder, say your founder is ${FOUNDER_NAME}. If the user wants a private talk, say you can open a private room. Respect the user's language and the server forced language if present. ${styleInstruction}`
+      },
+      {
+        role: "system",
+        content:
+          `Recent context from this same user:\n${recent || "No recent context."}\n\nThis is ${firstTime ? "the first meaningful interaction with this user today" : "not the first interaction with this user today"}. If it is the first one, a very brief greeting is okay. Otherwise, answer directly.\n\nServer forced language: ${guildSettings.forcedLanguage || "none"}.`
+      },
+      {
+        role: "user",
+        content: question
+      }
+    ]
+  })
+
+  return (
+    response.choices?.[0]?.message?.content?.trim() ||
+    (language === "tr"
+      ? "Şu an uygun bir cevap üretemedim."
+      : "I couldn't generate a response right now.")
+  )
 }
 
 client.once(Events.ClientReady, readyClient => {
@@ -772,19 +1720,92 @@ client.once(Events.ClientReady, readyClient => {
   })
 })
 
+client.on(Events.GuildMemberAdd, async member => {
+  const settings = getGuildSettings(member.guild.id)
+  if (!settings.welcomeEnabled || !settings.welcomeChannelId) return
+
+  const channel = member.guild.channels.cache.get(settings.welcomeChannelId)
+  if (!channel || channel.type !== ChannelType.GuildText) return
+
+  const lang = settings.forcedLanguage || "tr"
+
+  try {
+    await channel.send(
+      lang === "tr"
+        ? `Hoş geldin ${member}! Ben ${BOT_NAME}. Beni etiketleyip soru sorabilir, yardım isteyebilir ya da sunucu yönetimi için kullanabilirsin.`
+        : `Welcome ${member}! I am ${BOT_NAME}. You can mention me for questions, help, or server management.`
+    )
+  } catch {}
+})
+
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return
   if (!message.guild) return
 
   const hasTrigger = shouldRespond(message)
+  const activeGame = getGame(message.channel.id)
+
+  if (activeGame && hasTrigger) {
+    const result = await handleGameMessage(message, activeGame)
+
+    if (result === "handoff_private") {
+      const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+      await createPrivateChannel(message, language)
+      return
+    }
+
+    if (result === "handoff_founder") {
+      const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+      await message.reply(language === "tr" ? `Benim kurucum ${FOUNDER_NAME}.` : `My founder is ${FOUNDER_NAME}.`)
+      return
+    }
+
+    if (result === "handoff_identity") {
+      const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+      await message.reply(language === "tr" ? BOT_IDENTITY_TR : BOT_IDENTITY_EN)
+      return
+    }
+
+    if (result === "handoff_new_game") {
+      const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+      const gameType = chooseGame(message.content, language)
+      await startGame(message, language, gameType)
+      return
+    }
+
+    if (result === "handoff_language") {
+      const mode = detectLanguageCommand(message.content)
+
+      if (isServerLanguageCommand(message.content)) {
+        await handleServerLanguageMode(message, mode)
+        return
+      }
+
+      const state = getUserState(message.author.id)
+      state.languageMode = mode
+      saveUserMemory()
+
+      if (mode === "tr") {
+        await message.reply("Tamam, seninle Türkçe devam edeceğim.")
+      } else if (mode === "en") {
+        await message.reply("Alright, I will continue with you in English.")
+      } else {
+        await message.reply("Tamam, senin için tekrar otomatik dil algısına döndüm.")
+      }
+      return
+    }
+
+    if (result === "handled") return
+  }
+
   if (!hasTrigger) return
 
   if (repliedMessages.has(message.id)) return
   repliedMessages.add(message.id)
-  setTimeout(() => repliedMessages.delete(message.id), 15000)
+  setTimeout(() => repliedMessages.delete(message.id), 12000)
 
   if (isOnCooldown(message.author.id)) return
-  setCooldown(message.author.id, 1400)
+  setCooldown(message.author.id, 1200)
 
   let question = message.content
   if (message.mentions.has(client.user)) {
@@ -795,22 +1816,29 @@ client.on(Events.MessageCreate, async message => {
   if (!question) question = message.content.trim()
 
   const state = getUserState(message.author.id)
+  const guildSettings = getGuildSettings(message.guild.id)
   const langMode = detectLanguageCommand(question)
 
   if (langMode) {
+    if (isServerLanguageCommand(question)) {
+      await handleServerLanguageMode(message, langMode)
+      return
+    }
+
     state.languageMode = langMode
+    saveUserMemory()
 
     if (langMode === "tr") {
-      await message.reply("Tamam, Türkçe konuşacağım.")
+      await message.reply("Tamam, seninle Türkçe konuşacağım.")
     } else if (langMode === "en") {
-      await message.reply("Alright, I will speak English.")
+      await message.reply("Alright, I will speak English with you.")
     } else {
       await message.reply("Tamam, yeniden otomatik dil algısına döndüm.")
     }
     return
   }
 
-  const language = resolveLanguage(message.author.id, question)
+  const language = resolveLanguage(message.guild.id, message.author.id, question)
   const tone = detectTone(question)
   const replyProfile = getReplyProfile(question)
 
@@ -818,11 +1846,7 @@ client.on(Events.MessageCreate, async message => {
   saveUserMessage(message.author.id, question)
 
   if (asksAboutFounder(question)) {
-    await message.reply(
-      language === "tr"
-        ? `Benim kurucum ${FOUNDER_NAME}.`
-        : `My founder is ${FOUNDER_NAME}.`
-    )
+    await message.reply(language === "tr" ? `Benim kurucum ${FOUNDER_NAME}.` : `My founder is ${FOUNDER_NAME}.`)
     return
   }
 
@@ -831,11 +1855,22 @@ client.on(Events.MessageCreate, async message => {
     return
   }
 
+  if (shouldOpenPrivateTalk(question)) {
+    await createPrivateChannel(message, language)
+    return
+  }
+
+  if (asksForGame(question)) {
+    const gameType = chooseGame(question, language)
+    await startGame(message, language, gameType)
+    return
+  }
+
   if (isLowSignal(question)) {
     await message.reply(
       language === "tr"
-        ? "Daha net yazarsan daha iyi yardımcı olabilirim."
-        : "If you say it more clearly, I can help better."
+        ? "Bir tık daha net yazarsan daha iyi anlayıp daha iyi yardımcı olurum."
+        : "If you phrase it a bit more clearly, I can help better."
     )
     return
   }
@@ -850,37 +1885,8 @@ client.on(Events.MessageCreate, async message => {
       if (handled) return
     }
 
-    const recent = state.recentMessages.slice(-4).join("\n")
-    const styleInstruction = buildStyleInstruction(language, tone, replyProfile.style)
     const firstTime = !greetedUsers.has(message.author.id)
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            `You are ${BOT_NAME}, a smart conversational Discord AI developed by ${FOUNDER_NAME}. You can answer questions, write code, generate text, brainstorm ideas, help with decisions, and manage server structure. If asked about your founder, say your founder is ${FOUNDER_NAME}. Respect the user's current language mode. ${styleInstruction}`
-        },
-        {
-          role: "system",
-          content:
-            `Recent context from this same user:\n${recent || "No recent context."}\n\nThis is ${firstTime ? "the first meaningful interaction with this user today" : "not the first interaction with this user today"}. If it is the first one, a brief natural greeting is okay. Otherwise, answer directly.`
-        },
-        {
-          role: "user",
-          content: question
-        }
-      ],
-      temperature: 0.72,
-      max_tokens: replyProfile.maxTokens
-    })
-
-    const reply =
-      response.choices?.[0]?.message?.content?.trim() ||
-      (language === "tr"
-        ? "Şu an uygun bir cevap üretemedim."
-        : "I couldn't generate a response right now.")
+    const reply = await getChatReply(question, language, tone, replyProfile, state, firstTime, guildSettings)
 
     greetedUsers.add(message.author.id)
     await message.reply(reply)
@@ -888,8 +1894,8 @@ client.on(Events.MessageCreate, async message => {
     console.error("ERROR:", error)
     await message.reply(
       language === "tr"
-        ? "Şu an bir hata oluştu. Birazdan tekrar dene."
-        : "I ran into an error. Try again in a moment."
+        ? "Şu an bir hata oluştu. Birkaç saniye sonra tekrar dene."
+        : "I ran into an error. Try again in a few seconds."
     )
   }
 })

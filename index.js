@@ -19,7 +19,10 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers
-  ]
+  ],
+  allowedMentions: {
+    repliedUser: false
+  }
 })
 
 const openai = new OpenAI({
@@ -100,7 +103,7 @@ const triviaTR = [
   { q: "Türkiye'nin başkenti neresidir?", a: "ankara" },
   { q: "Dünyanın en büyük okyanusu hangisidir?", a: "pasifik" },
   { q: "2 + 2 x 2 kaç eder?", a: "6" },
-  { q: "Güneş sistemindeki en büyük gezegen hangisidir?", a: "jüpiter" }
+  { q: "Güneş sistemindeki en büyük gezegen hangisidir?", a: "jupiter" }
 ]
 
 const triviaEN = [
@@ -313,7 +316,6 @@ function asksAboutFounder(text) {
     "creator",
     "kurucun kim",
     "seni kim yapti",
-    "seni kim yapti",
     "seni kim gelistirdi",
     "kurucu kim"
   ].some(trigger => lower.includes(normalize(trigger)))
@@ -507,6 +509,102 @@ function safeJsonParse(text) {
   }
 }
 
+function getBotMember(guild) {
+  return guild?.members?.me || null
+}
+
+function getChannelPerms(channel) {
+  try {
+    const me = getBotMember(channel?.guild)
+    if (!me || !channel?.permissionsFor) return null
+    return channel.permissionsFor(me)
+  } catch {
+    return null
+  }
+}
+
+function canViewChannel(channel) {
+  const perms = getChannelPerms(channel)
+  return Boolean(perms?.has(PermissionFlagsBits.ViewChannel))
+}
+
+function canReadHistory(channel) {
+  const perms = getChannelPerms(channel)
+  return Boolean(perms?.has(PermissionFlagsBits.ReadMessageHistory))
+}
+
+function canSendToChannel(channel) {
+  if (!channel || typeof channel.send !== "function") return false
+  const perms = getChannelPerms(channel)
+  if (!perms) return false
+
+  try {
+    if (typeof channel.isThread === "function" && channel.isThread()) {
+      return (
+        perms.has(PermissionFlagsBits.ViewChannel) &&
+        perms.has(PermissionFlagsBits.SendMessagesInThreads)
+      )
+    }
+  } catch {}
+
+  return (
+    perms.has(PermissionFlagsBits.ViewChannel) &&
+    perms.has(PermissionFlagsBits.SendMessages)
+  )
+}
+
+async function safeTyping(channel) {
+  try {
+    if (!canSendToChannel(channel)) return false
+    if (typeof channel.sendTyping !== "function") return false
+    await channel.sendTyping()
+    return true
+  } catch (error) {
+    console.error("safeTyping error:", error?.code, error?.message)
+    return false
+  }
+}
+
+async function safeSend(channel, content) {
+  try {
+    if (!canSendToChannel(channel)) return null
+    return await channel.send({
+      content: String(content || ""),
+      allowedMentions: { parse: [] }
+    })
+  } catch (error) {
+    console.error("safeSend error:", error?.code, error?.message)
+    return null
+  }
+}
+
+async function safeReply(message, content) {
+  try {
+    if (message?.channel && canSendToChannel(message.channel) && canReadHistory(message.channel)) {
+      return await message.reply({
+        content: String(content || ""),
+        allowedMentions: { repliedUser: false },
+        failIfNotExists: false
+      })
+    }
+  } catch (error) {
+    console.error("safeReply primary error:", error?.code, error?.message)
+  }
+
+  try {
+    if (message?.channel && canSendToChannel(message.channel)) {
+      return await message.channel.send({
+        content: `${message.author} ${String(content || "")}`,
+        allowedMentions: { users: [message.author.id] }
+      })
+    }
+  } catch (error) {
+    console.error("safeReply fallback error:", error?.code, error?.message)
+  }
+
+  return null
+}
+
 function hasAdminAccess(member) {
   return member.permissions.has(PermissionFlagsBits.Administrator)
 }
@@ -670,15 +768,6 @@ function defaultChannelsForCategory(name, language) {
 function manualIntentParser(text, language) {
   const lower = normalize(text)
   const operations = []
-
-  function extractCategoryAfterKeyword(keyword) {
-    const idx = lower.indexOf(normalize(keyword))
-    if (idx === -1) return null
-    const tail = lower.slice(idx + normalize(keyword).length).trim()
-    const pieces = tail.split(" ")
-    if (!pieces.length) return null
-    return pieces.slice(0, 3).join(" ").trim()
-  }
 
   const createCategoryTriggers = [
     "kategori olustur",
@@ -1110,7 +1199,8 @@ async function createPrivateChannel(message, language) {
   const member = message.member
 
   if (!botCanManage(guild)) {
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? "Özel oda açabilmem için Manage Channels yetkisine ihtiyacım var."
         : "I need Manage Channels permission to open a private room."
@@ -1128,7 +1218,8 @@ async function createPrivateChannel(message, language) {
   )
 
   if (existing) {
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? `Zaten açık bir özel odan var: ${existing}`
         : `You already have an active private room: ${existing}`
@@ -1136,48 +1227,60 @@ async function createPrivateChannel(message, language) {
     return
   }
 
-  const privateChannel = await guild.channels.create({
-    name: channelName,
-    type: ChannelType.GuildText,
-    permissionOverwrites: [
-      {
-        id: guild.roles.everyone.id,
-        type: OverwriteType.Role,
-        deny: [PermissionFlagsBits.ViewChannel]
-      },
-      {
-        id: member.id,
-        type: OverwriteType.Member,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory
-        ]
-      },
-      {
-        id: client.user.id,
-        type: OverwriteType.Member,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.ManageChannels
-        ]
-      }
-    ]
-  })
+  try {
+    const privateChannel = await guild.channels.create({
+      name: channelName,
+      type: ChannelType.GuildText,
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone.id,
+          type: OverwriteType.Role,
+          deny: [PermissionFlagsBits.ViewChannel]
+        },
+        {
+          id: member.id,
+          type: OverwriteType.Member,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory
+          ]
+        },
+        {
+          id: client.user.id,
+          type: OverwriteType.Member,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageChannels
+          ]
+        }
+      ]
+    })
 
-  await privateChannel.send(
-    language === "tr"
-      ? `Merhaba ${member}, özel konuşma odan hazır. Hazırsan yaz, ben buradayım.`
-      : `Hey ${member}, your private room is ready. Send a message whenever you're ready.`
-  )
+    await safeSend(
+      privateChannel,
+      language === "tr"
+        ? `Merhaba ${member}, özel konuşma odan hazır. Hazırsan yaz, ben buradayım.`
+        : `Hey ${member}, your private room is ready. Send a message whenever you're ready.`
+    )
 
-  await message.reply(
-    language === "tr"
-      ? `Özel odan hazır: ${privateChannel}`
-      : `Your private room is ready: ${privateChannel}`
-  )
+    await safeReply(
+      message,
+      language === "tr"
+        ? `Özel odan hazır: ${privateChannel}`
+        : `Your private room is ready: ${privateChannel}`
+    )
+  } catch (error) {
+    console.error("createPrivateChannel error:", error)
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Özel oda açarken bir izin ya da yapılandırma hatası oluştu."
+        : "A permission or setup error happened while creating the private room."
+    )
+  }
 }
 
 async function startGame(message, language, gameType) {
@@ -1189,7 +1292,8 @@ async function startGame(message, language, gameType) {
       answer: language === "tr" ? riddle.answerTR : riddle.answerEN
     })
 
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? `Bilmece zamanı:\n${riddle.questionTR}\n\nİstersen ipucu isteyebilir, geçebilir ya da cevabı sorabilirsin.`
         : `Riddle time:\n${riddle.questionEN}\n\nYou can ask for a hint, skip, or ask for the answer.`
@@ -1205,7 +1309,8 @@ async function startGame(message, language, gameType) {
       answer: trivia.a
     })
 
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? `Soru:\n${trivia.q}\n\nİstersen ipucu isteyebilir, geçebilir ya da cevabı sorabilirsin.`
         : `Trivia:\n${trivia.q}\n\nYou can ask for a hint, skip, or ask for the answer.`
@@ -1221,7 +1326,8 @@ async function startGame(message, language, gameType) {
       answer: target
     })
 
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? "1 ile 10 arasında bir sayı tuttum. Tahmin et. İstersen geçebilir ya da cevabı sorabilirsin."
         : "I picked a number between 1 and 10. Guess it. You can skip or ask for the answer."
@@ -1231,7 +1337,7 @@ async function startGame(message, language, gameType) {
 
   if (gameType === "wyr") {
     const q = language === "tr" ? randomItem(wouldYouRatherTR) : randomItem(wouldYouRatherEN)
-    await message.reply(q)
+    await safeReply(message, q)
   }
 }
 
@@ -1268,13 +1374,14 @@ async function handleGameMessage(message, game) {
   const control = getGameControlIntent(content)
 
   if (control === "hint") {
-    await message.reply(language === "tr" ? `İpucu: ${getHint(game)}` : `Hint: ${getHint(game)}`)
+    await safeReply(message, language === "tr" ? `İpucu: ${getHint(game)}` : `Hint: ${getHint(game)}`)
     return "handled"
   }
 
   if (control === "answer") {
     clearGame(message.channel.id)
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? `Cevap: ${game.answer}. İstersen yeni bir oyun başlatabiliriz.`
         : `The answer was: ${game.answer}. We can start a new game if you want.`
@@ -1284,7 +1391,8 @@ async function handleGameMessage(message, game) {
 
   if (control === "skip") {
     clearGame(message.channel.id)
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? "Tamam, bunu geçiyorum. İstersen yeni bir oyun başlatabiliriz."
         : "Alright, skipping this one. We can start a new game if you want."
@@ -1294,19 +1402,20 @@ async function handleGameMessage(message, game) {
 
   if (control === "stop") {
     clearGame(message.channel.id)
-    await message.reply(language === "tr" ? "Tamam, oyunu kapattım." : "Alright, I ended the game.")
+    await safeReply(message, language === "tr" ? "Tamam, oyunu kapattım." : "Alright, I ended the game.")
     return "handled"
   }
 
   const answer = normalize(content)
   if (answer === normalize(game.answer)) {
     clearGame(message.channel.id)
-    await message.reply(language === "tr" ? "Doğru bildin. Güzel oynadın." : "Correct. Nice one.")
+    await safeReply(message, language === "tr" ? "Doğru bildin. Güzel oynadın." : "Correct. Nice one.")
     return "handled"
   }
 
   if (game.type === "number" && /^\d+$/.test(answer)) {
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? "Olmadı. Bir daha dene, ya da geç diyebilirsin."
         : "Not that one. Try again, or say skip."
@@ -1315,7 +1424,8 @@ async function handleGameMessage(message, game) {
   }
 
   if ((game.type === "trivia" || game.type === "riddle") && answer.length > 0) {
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? "Henüz doğru değil. İstersen ipucu al, geç ya da cevabı sor."
         : "Not correct yet. You can ask for a hint, skip, or ask for the answer."
@@ -1331,7 +1441,8 @@ async function executeManagementPlan(message, plan, language) {
   const member = message.member
 
   if (!hasAdminAccess(member)) {
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? "Bunu sadece yönetici yetkisi olan biri kullanabilir."
         : "Only someone with administrator permission can use that."
@@ -1340,7 +1451,8 @@ async function executeManagementPlan(message, plan, language) {
   }
 
   if (!botCanManage(guild)) {
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? "Bunu yapabilmem için bende Manage Channels yetkisi olmalı."
         : "I need Manage Channels permission to do that."
@@ -1491,8 +1603,8 @@ async function executeManagementPlan(message, plan, language) {
 
         if (!channel) {
           results.push(language === "tr" ? `Kanal bulunamadı: ${op.channelName}` : `Channel not found: ${op.channelName}`)
-        } else if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildForum) {
-          results.push(language === "tr" ? `Açıklama sadece yazı kanallarında değiştirilebilir: ${channel.name}` : `Topic can only be changed on text-based channels: ${channel.name}`)
+        } else if (channel.type !== ChannelType.GuildText) {
+          results.push(language === "tr" ? `Açıklama sadece yazı kanallarında değiştirilebilir: ${channel.name}` : `Topic can only be changed on text channels: ${channel.name}`)
         } else {
           await channel.setTopic(op.topic || "")
           results.push(language === "tr" ? `Kanal açıklaması değiştirildi: #${channel.name}` : `Updated topic for: ${channel.name}`)
@@ -1536,7 +1648,7 @@ async function executeManagementPlan(message, plan, language) {
         }
 
         if (!category) {
-          results.push(language === "tr" ? `Kategori bulunamadı.` : `Category not found.`)
+          results.push(language === "tr" ? "Kategori bulunamadı." : "Category not found.")
         } else {
           const children = guild.channels.cache
             .filter(c => c.parentId === category.id && c.type !== ChannelType.GuildCategory)
@@ -1568,14 +1680,14 @@ async function executeManagementPlan(message, plan, language) {
         }
 
         if (!category) {
-          results.push(language === "tr" ? `Kategori bulunamadı.` : `Category not found.`)
+          results.push(language === "tr" ? "Kategori bulunamadı." : "Category not found.")
         } else {
           const children = guild.channels.cache
-            .filter(c => c.parentId === category.id && (c.type === ChannelType.GuildText || c.type === ChannelType.GuildForum))
+            .filter(c => c.parentId === category.id && c.type === ChannelType.GuildText)
             .sort((a, b) => a.rawPosition - b.rawPosition)
 
           if (!children.size) {
-            results.push(language === "tr" ? `Açıklaması değiştirilebilecek yazı kanalı yok: ${category.name}` : `No text-based channels to update in category: ${category.name}`)
+            results.push(language === "tr" ? `Açıklaması değiştirilebilecek yazı kanalı yok: ${category.name}` : `No text channels to update in category: ${category.name}`)
           } else {
             for (const [, ch] of children) {
               await ch.setTopic(op.topic || "")
@@ -1611,6 +1723,7 @@ async function executeManagementPlan(message, plan, language) {
         }
       }
     } catch (err) {
+      console.error("Management operation error:", op?.type, err)
       results.push(
         language === "tr"
           ? `İşlem başarısız: ${op.type}`
@@ -1620,7 +1733,8 @@ async function executeManagementPlan(message, plan, language) {
   }
 
   if (!results.length) {
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? "Yönetim isteğini algıladım ama net işlem çıkaramadım."
         : "I detected a management request but could not extract a clear action."
@@ -1628,7 +1742,7 @@ async function executeManagementPlan(message, plan, language) {
     return true
   }
 
-  await message.reply(results.join("\n"))
+  await safeReply(message, results.join("\n"))
   return true
 }
 
@@ -1637,7 +1751,8 @@ async function handleServerLanguageMode(message, mode) {
   const language = resolveLanguage(message.guild.id, message.author.id, message.content)
 
   if (!hasAdminAccess(message.member)) {
-    await message.reply(
+    await safeReply(
+      message,
       language === "tr"
         ? "Sunucu dili ayarını sadece yönetici değiştirebilir."
         : "Only an administrator can change the server language setting."
@@ -1649,7 +1764,7 @@ async function handleServerLanguageMode(message, mode) {
     guildSettings.forcedLanguage = "tr"
     guildSettings.forcedLanguageBy = message.author.id
     saveGuildSettings()
-    await message.reply("Tamam, bu sunucuda ben artık Türkçe konuşacağım. Bunu sadece yönetici kaldırabilir.")
+    await safeReply(message, "Tamam, bu sunucuda ben artık Türkçe konuşacağım. Bunu sadece yönetici kaldırabilir.")
     return true
   }
 
@@ -1657,14 +1772,15 @@ async function handleServerLanguageMode(message, mode) {
     guildSettings.forcedLanguage = "en"
     guildSettings.forcedLanguageBy = message.author.id
     saveGuildSettings()
-    await message.reply("Alright, I will now speak English in this server until an admin changes it.")
+    await safeReply(message, "Alright, I will now speak English in this server until an admin changes it.")
     return true
   }
 
   guildSettings.forcedLanguage = null
   guildSettings.forcedLanguageBy = null
   saveGuildSettings()
-  await message.reply(
+  await safeReply(
+    message,
     language === "tr"
       ? "Tamam, sunucu dil kilidini kaldırdım. Yeniden otomatik dil algısına döndüm."
       : "Alright, I removed the server language lock and returned to automatic language detection."
@@ -1706,6 +1822,22 @@ async function getChatReply(question, language, tone, replyProfile, userState, f
   )
 }
 
+process.on("unhandledRejection", error => {
+  console.error("UNHANDLED_REJECTION:", error)
+})
+
+process.on("uncaughtException", error => {
+  console.error("UNCAUGHT_EXCEPTION:", error)
+})
+
+client.on("error", error => {
+  console.error("CLIENT_ERROR:", error)
+})
+
+client.on("shardError", error => {
+  console.error("SHARD_ERROR:", error)
+})
+
 client.once(Events.ClientReady, readyClient => {
   console.log(`Logged in as ${readyClient.user.tag}`)
 
@@ -1721,162 +1853,167 @@ client.once(Events.ClientReady, readyClient => {
 })
 
 client.on(Events.GuildMemberAdd, async member => {
-  const settings = getGuildSettings(member.guild.id)
-  if (!settings.welcomeEnabled || !settings.welcomeChannelId) return
-
-  const channel = member.guild.channels.cache.get(settings.welcomeChannelId)
-  if (!channel || channel.type !== ChannelType.GuildText) return
-
-  const lang = settings.forcedLanguage || "tr"
-
   try {
-    await channel.send(
+    const settings = getGuildSettings(member.guild.id)
+    if (!settings.welcomeEnabled || !settings.welcomeChannelId) return
+
+    const channel = member.guild.channels.cache.get(settings.welcomeChannelId)
+    if (!channel || channel.type !== ChannelType.GuildText) return
+    if (!canViewChannel(channel) || !canSendToChannel(channel)) return
+
+    const lang = settings.forcedLanguage || "tr"
+
+    await safeSend(
+      channel,
       lang === "tr"
         ? `Hoş geldin ${member}! Ben ${BOT_NAME}. Beni etiketleyip soru sorabilir, yardım isteyebilir ya da sunucu yönetimi için kullanabilirsin.`
         : `Welcome ${member}! I am ${BOT_NAME}. You can mention me for questions, help, or server management.`
     )
-  } catch {}
+  } catch (error) {
+    console.error("GuildMemberAdd error:", error)
+  }
 })
 
 client.on(Events.MessageCreate, async message => {
-  if (message.author.bot) return
-  if (!message.guild) return
+  try {
+    if (message.author.bot) return
+    if (!message.guild) return
 
-  const hasTrigger = shouldRespond(message)
-  const activeGame = getGame(message.channel.id)
+    const hasTrigger = shouldRespond(message)
+    const activeGame = getGame(message.channel.id)
 
-  if (activeGame && hasTrigger) {
-    const result = await handleGameMessage(message, activeGame)
+    if (activeGame) {
+      const result = await handleGameMessage(message, activeGame)
 
-    if (result === "handoff_private") {
-      const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+      if (result === "handoff_private") {
+        const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+        await createPrivateChannel(message, language)
+        return
+      }
+
+      if (result === "handoff_founder") {
+        const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+        await safeReply(message, language === "tr" ? `Benim kurucum ${FOUNDER_NAME}.` : `My founder is ${FOUNDER_NAME}.`)
+        return
+      }
+
+      if (result === "handoff_identity") {
+        const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+        await safeReply(message, language === "tr" ? BOT_IDENTITY_TR : BOT_IDENTITY_EN)
+        return
+      }
+
+      if (result === "handoff_new_game") {
+        const language = resolveLanguage(message.guild.id, message.author.id, message.content)
+        const gameType = chooseGame(message.content, language)
+        await startGame(message, language, gameType)
+        return
+      }
+
+      if (result === "handoff_language") {
+        const mode = detectLanguageCommand(message.content)
+
+        if (isServerLanguageCommand(message.content)) {
+          await handleServerLanguageMode(message, mode)
+          return
+        }
+
+        const state = getUserState(message.author.id)
+        state.languageMode = mode
+        saveUserMemory()
+
+        if (mode === "tr") {
+          await safeReply(message, "Tamam, seninle Türkçe devam edeceğim.")
+        } else if (mode === "en") {
+          await safeReply(message, "Alright, I will continue with you in English.")
+        } else {
+          await safeReply(message, "Tamam, senin için tekrar otomatik dil algısına döndüm.")
+        }
+        return
+      }
+
+      if (result === "handled") return
+    }
+
+    if (!hasTrigger) return
+
+    if (repliedMessages.has(message.id)) return
+    repliedMessages.add(message.id)
+    setTimeout(() => repliedMessages.delete(message.id), 12000)
+
+    if (isOnCooldown(message.author.id)) return
+    setCooldown(message.author.id, 1200)
+
+    let question = message.content
+    if (message.mentions.has(client.user)) {
+      question = cleanMention(question, client.user.id)
+    }
+
+    question = question.replace(new RegExp(BOT_NAME, "ig"), "").trim()
+    if (!question) question = message.content.trim()
+
+    const state = getUserState(message.author.id)
+    const guildSettings = getGuildSettings(message.guild.id)
+    const langMode = detectLanguageCommand(question)
+
+    if (langMode) {
+      if (isServerLanguageCommand(question)) {
+        await handleServerLanguageMode(message, langMode)
+        return
+      }
+
+      state.languageMode = langMode
+      saveUserMemory()
+
+      if (langMode === "tr") {
+        await safeReply(message, "Tamam, seninle Türkçe konuşacağım.")
+      } else if (langMode === "en") {
+        await safeReply(message, "Alright, I will speak English with you.")
+      } else {
+        await safeReply(message, "Tamam, yeniden otomatik dil algısına döndüm.")
+      }
+      return
+    }
+
+    const language = resolveLanguage(message.guild.id, message.author.id, question)
+    const tone = detectTone(question)
+    const replyProfile = getReplyProfile(question)
+
+    state.tone = tone
+    saveUserMessage(message.author.id, question)
+
+    if (asksAboutFounder(question)) {
+      await safeReply(message, language === "tr" ? `Benim kurucum ${FOUNDER_NAME}.` : `My founder is ${FOUNDER_NAME}.`)
+      return
+    }
+
+    if (asksWhatAreYou(question)) {
+      await safeReply(message, language === "tr" ? BOT_IDENTITY_TR : BOT_IDENTITY_EN)
+      return
+    }
+
+    if (shouldOpenPrivateTalk(question)) {
       await createPrivateChannel(message, language)
       return
     }
 
-    if (result === "handoff_founder") {
-      const language = resolveLanguage(message.guild.id, message.author.id, message.content)
-      await message.reply(language === "tr" ? `Benim kurucum ${FOUNDER_NAME}.` : `My founder is ${FOUNDER_NAME}.`)
-      return
-    }
-
-    if (result === "handoff_identity") {
-      const language = resolveLanguage(message.guild.id, message.author.id, message.content)
-      await message.reply(language === "tr" ? BOT_IDENTITY_TR : BOT_IDENTITY_EN)
-      return
-    }
-
-    if (result === "handoff_new_game") {
-      const language = resolveLanguage(message.guild.id, message.author.id, message.content)
-      const gameType = chooseGame(message.content, language)
+    if (asksForGame(question)) {
+      const gameType = chooseGame(question, language)
       await startGame(message, language, gameType)
       return
     }
 
-    if (result === "handoff_language") {
-      const mode = detectLanguageCommand(message.content)
-
-      if (isServerLanguageCommand(message.content)) {
-        await handleServerLanguageMode(message, mode)
-        return
-      }
-
-      const state = getUserState(message.author.id)
-      state.languageMode = mode
-      saveUserMemory()
-
-      if (mode === "tr") {
-        await message.reply("Tamam, seninle Türkçe devam edeceğim.")
-      } else if (mode === "en") {
-        await message.reply("Alright, I will continue with you in English.")
-      } else {
-        await message.reply("Tamam, senin için tekrar otomatik dil algısına döndüm.")
-      }
+    if (isLowSignal(question)) {
+      await safeReply(
+        message,
+        language === "tr"
+          ? "Bir tık daha net yazarsan daha iyi anlayıp daha iyi yardımcı olurum."
+          : "If you phrase it a bit more clearly, I can help better."
+      )
       return
     }
 
-    if (result === "handled") return
-  }
-
-  if (!hasTrigger) return
-
-  if (repliedMessages.has(message.id)) return
-  repliedMessages.add(message.id)
-  setTimeout(() => repliedMessages.delete(message.id), 12000)
-
-  if (isOnCooldown(message.author.id)) return
-  setCooldown(message.author.id, 1200)
-
-  let question = message.content
-  if (message.mentions.has(client.user)) {
-    question = cleanMention(question, client.user.id)
-  }
-
-  question = question.replace(new RegExp(BOT_NAME, "ig"), "").trim()
-  if (!question) question = message.content.trim()
-
-  const state = getUserState(message.author.id)
-  const guildSettings = getGuildSettings(message.guild.id)
-  const langMode = detectLanguageCommand(question)
-
-  if (langMode) {
-    if (isServerLanguageCommand(question)) {
-      await handleServerLanguageMode(message, langMode)
-      return
-    }
-
-    state.languageMode = langMode
-    saveUserMemory()
-
-    if (langMode === "tr") {
-      await message.reply("Tamam, seninle Türkçe konuşacağım.")
-    } else if (langMode === "en") {
-      await message.reply("Alright, I will speak English with you.")
-    } else {
-      await message.reply("Tamam, yeniden otomatik dil algısına döndüm.")
-    }
-    return
-  }
-
-  const language = resolveLanguage(message.guild.id, message.author.id, question)
-  const tone = detectTone(question)
-  const replyProfile = getReplyProfile(question)
-
-  state.tone = tone
-  saveUserMessage(message.author.id, question)
-
-  if (asksAboutFounder(question)) {
-    await message.reply(language === "tr" ? `Benim kurucum ${FOUNDER_NAME}.` : `My founder is ${FOUNDER_NAME}.`)
-    return
-  }
-
-  if (asksWhatAreYou(question)) {
-    await message.reply(language === "tr" ? BOT_IDENTITY_TR : BOT_IDENTITY_EN)
-    return
-  }
-
-  if (shouldOpenPrivateTalk(question)) {
-    await createPrivateChannel(message, language)
-    return
-  }
-
-  if (asksForGame(question)) {
-    const gameType = chooseGame(question, language)
-    await startGame(message, language, gameType)
-    return
-  }
-
-  if (isLowSignal(question)) {
-    await message.reply(
-      language === "tr"
-        ? "Bir tık daha net yazarsan daha iyi anlayıp daha iyi yardımcı olurum."
-        : "If you phrase it a bit more clearly, I can help better."
-    )
-    return
-  }
-
-  try {
-    await message.channel.sendTyping()
+    await safeTyping(message.channel)
 
     const managementPlan = await detectManagementPlan(question, language)
 
@@ -1889,14 +2026,21 @@ client.on(Events.MessageCreate, async message => {
     const reply = await getChatReply(question, language, tone, replyProfile, state, firstTime, guildSettings)
 
     greetedUsers.add(message.author.id)
-    await message.reply(reply)
+    await safeReply(reply ? message : null, reply)
   } catch (error) {
-    console.error("ERROR:", error)
-    await message.reply(
-      language === "tr"
-        ? "Şu an bir hata oluştu. Birkaç saniye sonra tekrar dene."
-        : "I ran into an error. Try again in a few seconds."
-    )
+    console.error("MESSAGE_CREATE_FATAL:", error)
+    try {
+      const language = message?.guild && message?.author
+        ? resolveLanguage(message.guild.id, message.author.id, message.content || "")
+        : "tr"
+
+      await safeReply(
+        message,
+        language === "tr"
+          ? "Şu an bir hata oluştu. Birkaç saniye sonra tekrar dene."
+          : "I ran into an error. Try again in a few seconds."
+      )
+    } catch {}
   }
 })
 

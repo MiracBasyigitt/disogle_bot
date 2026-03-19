@@ -148,8 +148,7 @@ const COLOR_ALIASES = {
     turuncu: "#fb923c",
     beyaz: "#ffffff",
     siyah: "#111111",
-    gri: "#6b7280",
-    grii: "#6b7280"
+    gri: "#6b7280"
   },
   en: {
     purple: "#8000ff",
@@ -180,21 +179,9 @@ function getGuildModerationState(guildId) {
       settings: {
         warnSystemEnabled: true,
         autoPunishments: [
-          {
-            warnCount: 3,
-            action: "mute",
-            durationMs: 15 * 60 * 1000
-          },
-          {
-            warnCount: 5,
-            action: "kick",
-            durationMs: null
-          },
-          {
-            warnCount: 7,
-            action: "ban",
-            durationMs: null
-          }
+          { warnCount: 3, action: "mute", durationMs: 15 * 60 * 1000 },
+          { warnCount: 5, action: "kick", durationMs: null },
+          { warnCount: 7, action: "ban", durationMs: null }
         ]
       }
     }
@@ -209,21 +196,9 @@ function getGuildModerationState(guildId) {
     persistedModerationState[guildId].settings = {
       warnSystemEnabled: true,
       autoPunishments: [
-        {
-          warnCount: 3,
-          action: "mute",
-          durationMs: 15 * 60 * 1000
-        },
-        {
-          warnCount: 5,
-          action: "kick",
-          durationMs: null
-        },
-        {
-          warnCount: 7,
-          action: "ban",
-          durationMs: null
-        }
+        { warnCount: 3, action: "mute", durationMs: 15 * 60 * 1000 },
+        { warnCount: 5, action: "kick", durationMs: null },
+        { warnCount: 7, action: "ban", durationMs: null }
       ]
     }
   }
@@ -343,8 +318,7 @@ function cleanMention(content, botId) {
 }
 
 function hasBotNameTrigger(content) {
-  const lower = String(content || "").toLowerCase()
-  return lower.includes(BOT_NAME.toLowerCase())
+  return String(content || "").toLowerCase().includes(BOT_NAME.toLowerCase())
 }
 
 function isReplyToBot(message) {
@@ -685,17 +659,11 @@ function canSendToChannel(channel) {
 
   try {
     if (typeof channel.isThread === "function" && channel.isThread()) {
-      return (
-        perms.has(PermissionFlagsBits.ViewChannel) &&
-        perms.has(PermissionFlagsBits.SendMessagesInThreads)
-      )
+      return perms.has(PermissionFlagsBits.ViewChannel) && perms.has(PermissionFlagsBits.SendMessagesInThreads)
     }
   } catch {}
 
-  return (
-    perms.has(PermissionFlagsBits.ViewChannel) &&
-    perms.has(PermissionFlagsBits.SendMessages)
-  )
+  return perms.has(PermissionFlagsBits.ViewChannel) && perms.has(PermissionFlagsBits.SendMessages)
 }
 
 async function safeTyping(channel) {
@@ -950,7 +918,6 @@ function roleNameFromColorWord(word, language) {
     lila: "Lila",
     pembe: "Pembe",
     kirmizi: "Kırmızı",
-    kirmızı: "Kırmızı",
     mavi: "Mavi",
     lacivert: "Lacivert",
     turkuaz: "Turkuaz",
@@ -1014,6 +981,39 @@ function parseCount(text) {
   return null
 }
 
+function parseVoiceUserLimit(text) {
+  const lower = normalize(text)
+
+  const patterns = [
+    /(\d+)\s*(kisilik|kişilik)\s*(sesli|voice)/,
+    /(sesli|voice).+?(\d+)\s*(kisilik|kişilik)/,
+    /user\s*limit\s*(\d+)/,
+    /limit\s*(\d+)/,
+    /(\d+)\s*person/
+  ]
+
+  for (const pattern of patterns) {
+    const match = lower.match(pattern)
+    if (match) {
+      const value = match.find(v => /^\d+$/.test(String(v || "")))
+      if (value) {
+        const parsed = Number(value)
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 99) return parsed
+      }
+    }
+  }
+
+  return null
+}
+
+function cleanExtractedName(value) {
+  return String(value || "")
+    .replace(/\b(olsun|olacak|yap|aç|ac|oluştur|olustur|create|make|inside|içerisinde|icerisinde|ve|and)\b/gi, " ")
+    .replace(/\b(kategori|category|kanal|channel|sesli|voice|sohbet)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
 function looksLikeManagementRequest(text) {
   const lower = normalize(text)
 
@@ -1023,7 +1023,7 @@ function looksLikeManagementRequest(text) {
     "olustur", "create",
     "sil", "delete",
     "degistir", "rename",
-    "tası", "taşı", "move",
+    "tasi", "taşı", "move",
     "aciklama", "açıklama", "topic", "description",
     "rol", "role",
     "ver", "give",
@@ -1070,7 +1070,18 @@ function parseRoleIntentManual(text, language) {
         type: "create_role",
         roleName,
         color: item.hex,
-        assignToRequester: true
+        assignToRequester: true,
+        categoryName: null,
+        newCategoryName: null,
+        channelName: null,
+        newChannelName: null,
+        channelType: null,
+        topic: null,
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: false,
+        userLimit: null,
+        permissions: []
       })
     }
     return operations
@@ -1083,7 +1094,18 @@ function parseRoleIntentManual(text, language) {
         type: "create_role",
         roleName,
         color: item.hex,
-        assignToRequester: false
+        assignToRequester: false,
+        categoryName: null,
+        newCategoryName: null,
+        channelName: null,
+        newChannelName: null,
+        channelType: null,
+        topic: null,
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: false,
+        userLimit: null,
+        permissions: []
       })
     }
     return operations
@@ -1095,7 +1117,18 @@ function parseRoleIntentManual(text, language) {
         type: "create_role",
         roleName: titleCaseRoleName(q),
         color: parseHexColor(text),
-        assignToRequester: true
+        assignToRequester: true,
+        categoryName: null,
+        newCategoryName: null,
+        channelName: null,
+        newChannelName: null,
+        channelType: null,
+        topic: null,
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: false,
+        userLimit: null,
+        permissions: []
       })
     }
     return operations
@@ -1107,35 +1140,20 @@ function parseRoleIntentManual(text, language) {
         type: "create_role",
         roleName: titleCaseRoleName(q),
         color: parseHexColor(text),
-        assignToRequester: false
+        assignToRequester: false,
+        categoryName: null,
+        newCategoryName: null,
+        channelName: null,
+        newChannelName: null,
+        channelType: null,
+        topic: null,
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: false,
+        userLimit: null,
+        permissions: []
       })
     }
-    return operations
-  }
-
-  const singularTR = lower.match(/bana\s+([a-z0-9ğüşöçı# -]+?)\s+renkte\s+bir\s+rol\s+ver/)
-  if (singularTR?.[1]) {
-    const raw = singularTR[1].trim()
-    const color = resolveNamedColor(raw) || parseHexColor(raw)
-    operations.push({
-      type: "create_role",
-      roleName: roleNameFromColorWord(raw, language),
-      color,
-      assignToRequester: true
-    })
-    return operations
-  }
-
-  const singularEN = lower.match(/give me a\s+([a-z0-9# -]+?)\s+role/)
-  if (singularEN?.[1]) {
-    const raw = singularEN[1].trim()
-    const color = resolveNamedColor(raw) || parseHexColor(raw)
-    operations.push({
-      type: "create_role",
-      roleName: roleNameFromColorWord(raw, language),
-      color,
-      assignToRequester: true
-    })
     return operations
   }
 
@@ -1151,95 +1169,171 @@ function manualIntentParser(text, language) {
     return { isManagementRequest: true, operations: roleOps }
   }
 
-  const categoryPairMatch =
-    lower.match(/([a-z0-9ğüşöçı -]+?)\s+adinda\s+kategori\s+olustur/) ||
-    lower.match(/create\s+(?:a\s+)?category\s+(?:named\s+)?([a-z0-9 -]+)/)
+  const quoted = extractQuoted(text)
+  const count = parseCount(text)
+  const detectedUserLimit = parseVoiceUserLimit(text)
 
-  const channelCount = parseCount(text)
-  const allTopicTR =
-    lower.match(/hepsinin\s+aciklamasi\s+(.+?)\s+olsun/) ||
-    lower.match(/hepsinin\s+açıklaması\s+(.+?)\s+olsun/)
-  const allTopicEN =
-    lower.match(/all(?: of them)?(?: channels)?(?: should)?(?: have)?(?: the)? description\s+(.+)/) ||
-    lower.match(/with(?: the)? description\s+(.+)/)
+  const categoryMatch =
+    lower.match(/(.+?)\s+adinda\s+bir?\s*kategori\s+olustur/) ||
+    lower.match(/(.+?)\s+adinda\s+kategori\s+olustur/) ||
+    lower.match(/(.+?)\s+isminde\s+bir?\s*kategori\s+olustur/) ||
+    lower.match(/(.+?)\s+isminde\s+kategori\s+olustur/) ||
+    lower.match(/create\s+(?:a\s+)?category\s+(?:named\s+)?(.+?)(?:\s+and|\s+with|$)/)
 
-  const categoryOnlyName =
-    lower.match(/([a-z0-9ğüşöçı -]+?)\s+adinda\s+kategori/) ||
-    lower.match(/([a-z0-9ğüşöçı -]+?)\s+isminde\s+kategori/) ||
-    lower.match(/category\s+([a-z0-9 -]+)/)
+  if (categoryMatch?.[1]) {
+    const rawCategoryName = cleanExtractedName(categoryMatch[1])
+    if (rawCategoryName) {
+      operations.push({
+        type: "create_category",
+        categoryName: rawCategoryName,
+        newCategoryName: null,
+        channelName: null,
+        newChannelName: null,
+        channelType: null,
+        topic: null,
+        targetCategoryName: null,
+        baseName: null,
+        applySensibleDefaults: false,
+        roleName: null,
+        color: null,
+        assignToRequester: false,
+        userLimit: null,
+        permissions: []
+      })
 
-  if (categoryPairMatch?.[1] || categoryOnlyName?.[1]) {
-    const rawCategory = (categoryPairMatch?.[1] || categoryOnlyName?.[1] || "").trim()
-    const categoryName = rawCategory.replace(/\s+(ve|and)\s*$/i, "").trim()
+      const wantsVoiceInside =
+        lower.includes("sesli sohbet olsun") ||
+        lower.includes("sesli kanal olsun") ||
+        lower.includes("voice chat") ||
+        lower.includes("voice channel") ||
+        lower.includes("içerisinde sesli") ||
+        lower.includes("icerisinde sesli")
 
-    operations.push({
-      type: "create_category",
-      categoryName,
-      newCategoryName: null,
-      channelName: null,
-      newChannelName: null,
-      channelType: null,
-      topic: null,
-      targetCategoryName: null,
-      baseName: null,
-      applySensibleDefaults:
-        lower.includes("mantikli") ||
-        lower.includes("uygun") ||
-        lower.includes("sensible") ||
-        lower.includes("smart"),
-      permissions: []
-    })
+      const wantsTextInside =
+        lower.includes("yazili kanal") ||
+        lower.includes("text channel") ||
+        lower.includes("metin kanal")
 
-    const wantsChannelsInside =
-      lower.includes("kanallari olsun") ||
-      lower.includes("kanalları olsun") ||
-      lower.includes("kanallar olsun") ||
-      lower.includes("channels in it") ||
-      lower.includes("inside it") ||
-      lower.includes("under it") ||
-      lower.includes("create channels") ||
-      lower.includes("4 tane") ||
-      lower.includes("4 channel") ||
-      lower.includes("4 channels")
-
-    if (wantsChannelsInside && channelCount) {
-      for (let i = 1; i <= channelCount; i++) {
+      if (wantsVoiceInside) {
         operations.push({
           type: "create_channel",
-          categoryName,
+          categoryName: rawCategoryName,
           newCategoryName: null,
-          channelName: i === 1 ? "general" : `channel-${i}`,
+          channelName: language === "tr" ? "sesli-sohbet" : "voice-chat",
+          newChannelName: null,
+          channelType: "voice",
+          topic: null,
+          targetCategoryName: null,
+          baseName: null,
+          applySensibleDefaults: false,
+          roleName: null,
+          color: null,
+          assignToRequester: false,
+          userLimit: detectedUserLimit,
+          permissions: []
+        })
+      }
+
+      if (wantsTextInside) {
+        operations.push({
+          type: "create_channel",
+          categoryName: rawCategoryName,
+          newCategoryName: null,
+          channelName: language === "tr" ? "genel" : "general",
           newChannelName: null,
           channelType: "text",
           topic: null,
           targetCategoryName: null,
           baseName: null,
           applySensibleDefaults: false,
+          roleName: null,
+          color: null,
+          assignToRequester: false,
+          userLimit: null,
           permissions: []
         })
       }
 
-      const topic = (allTopicTR?.[1] || allTopicEN?.[1] || "").trim()
-      if (topic) {
-        operations.push({
-          type: "set_all_channel_topics_in_category",
-          categoryName,
-          newCategoryName: null,
-          channelName: null,
-          newChannelName: null,
-          channelType: null,
-          topic,
-          targetCategoryName: null,
-          baseName: null,
-          applySensibleDefaults: false,
-          permissions: []
-        })
+      if (count && lower.includes("kanal") && !wantsVoiceInside && !wantsTextInside) {
+        for (let i = 1; i <= count; i++) {
+          operations.push({
+            type: "create_channel",
+            categoryName: rawCategoryName,
+            newCategoryName: null,
+            channelName: i === 1 ? (language === "tr" ? "genel" : "general") : `channel-${i}`,
+            newChannelName: null,
+            channelType: "text",
+            topic: null,
+            targetCategoryName: null,
+            baseName: null,
+            applySensibleDefaults: false,
+            roleName: null,
+            color: null,
+            assignToRequester: false,
+            userLimit: null,
+            permissions: []
+          })
+        }
       }
 
       return {
         isManagementRequest: true,
         operations
       }
+    }
+  }
+
+  const directVoiceChannelMatch =
+    lower.match(/(?:adi|adı)\s+(.+?)\s+olsun/) ||
+    lower.match(/named\s+(.+?)(?:\s|$)/)
+
+  if (
+    lower.includes("ses kanal") ||
+    lower.includes("sesli kanal") ||
+    lower.includes("voice channel") ||
+    lower.includes("sesli sohbet")
+  ) {
+    let targetCategoryName = null
+    const categoryRef =
+      lower.match(/(.+?)\s+kategorisinde/) ||
+      lower.match(/(.+?)\s+kategorisine/) ||
+      lower.match(/under\s+(.+?)\s+category/)
+
+    if (categoryRef?.[1]) {
+      targetCategoryName = cleanExtractedName(categoryRef[1])
+    }
+
+    let voiceChannelName = null
+
+    if (quoted.length) {
+      voiceChannelName = quoted[0]
+    } else if (directVoiceChannelMatch?.[1]) {
+      voiceChannelName = cleanExtractedName(directVoiceChannelMatch[1])
+    }
+
+    if (!voiceChannelName) voiceChannelName = language === "tr" ? "sesli-sohbet" : "voice-chat"
+
+    operations.push({
+      type: "create_channel",
+      categoryName: targetCategoryName,
+      newCategoryName: null,
+      channelName: voiceChannelName,
+      newChannelName: null,
+      channelType: "voice",
+      topic: null,
+      targetCategoryName: null,
+      baseName: null,
+      applySensibleDefaults: false,
+      roleName: null,
+      color: null,
+      assignToRequester: false,
+      userLimit: detectedUserLimit,
+      permissions: []
+    })
+
+    return {
+      isManagementRequest: true,
+      operations
     }
   }
 
@@ -1274,39 +1368,50 @@ function manualIntentParser(text, language) {
     lower.includes("uygun kanallar") ||
     lower.includes("mantikli olanlari ac")
   ) {
-    const m = lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+adinda\s+kategori/)
+    const m = lower.match(/(.+?)\s+adinda\s+kategori/)
     if (m?.[1]) {
-      operations.push({
-        type: "create_category",
-        categoryName: m[1].trim(),
-        newCategoryName: null,
-        channelName: null,
-        newChannelName: null,
-        channelType: null,
-        topic: null,
-        targetCategoryName: null,
-        baseName: null,
-        applySensibleDefaults: true,
-        permissions: []
-      })
+      const categoryName = cleanExtractedName(m[1])
+      if (categoryName) {
+        operations.push({
+          type: "create_category",
+          categoryName,
+          newCategoryName: null,
+          channelName: null,
+          newChannelName: null,
+          channelType: null,
+          topic: null,
+          targetCategoryName: null,
+          baseName: null,
+          applySensibleDefaults: true,
+          roleName: null,
+          color: null,
+          assignToRequester: false,
+          userLimit: null,
+          permissions: []
+        })
+      }
     }
   }
 
   if (lower.includes("tum kanallarin ismini") || lower.includes("all channel names")) {
-    const namedCat = lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisindeki\s+tum\s+kanallar/)
-    const nameMatch = lower.match(/ismini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) || lower.match(/name(?:s)?\s+to\s+([a-z0-9\s-]+)/)
+    const namedCat = lower.match(/(.+?)\s+kategorisindeki\s+tum\s+kanallar/)
+    const nameMatch = lower.match(/ismini\s+(.+?)\s+yap/) || lower.match(/name(?:s)?\s+to\s+(.+)/)
     if (namedCat?.[1] && nameMatch?.[1]) {
       operations.push({
         type: "rename_all_channels_in_category",
-        categoryName: namedCat[1].trim(),
+        categoryName: cleanExtractedName(namedCat[1]),
         newCategoryName: null,
         channelName: null,
         newChannelName: null,
         channelType: null,
         topic: null,
         targetCategoryName: null,
-        baseName: nameMatch[1].trim(),
+        baseName: cleanExtractedName(nameMatch[1]),
         applySensibleDefaults: false,
+        roleName: null,
+        color: null,
+        assignToRequester: false,
+        userLimit: null,
         permissions: []
       })
     }
@@ -1318,7 +1423,7 @@ function manualIntentParser(text, language) {
     lower.includes("description change") ||
     lower.includes("change topic")
   ) {
-    const catMatch = lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisindeki/)
+    const catMatch = lower.match(/(.+?)\s+kategorisindeki/)
     const topicMatch =
       lower.match(/aciklamasini\s+(.+?)\s+yap/) ||
       lower.match(/açıklamasını\s+(.+?)\s+yap/) ||
@@ -1327,7 +1432,7 @@ function manualIntentParser(text, language) {
     if (catMatch?.[1] && topicMatch?.[1]) {
       operations.push({
         type: "set_all_channel_topics_in_category",
-        categoryName: catMatch[1].trim(),
+        categoryName: cleanExtractedName(catMatch[1]),
         newCategoryName: null,
         channelName: null,
         newChannelName: null,
@@ -1336,6 +1441,10 @@ function manualIntentParser(text, language) {
         targetCategoryName: null,
         baseName: null,
         applySensibleDefaults: false,
+        roleName: null,
+        color: null,
+        assignToRequester: false,
+        userLimit: null,
         permissions: []
       })
     }
@@ -1344,26 +1453,31 @@ function manualIntentParser(text, language) {
   for (const trigger of createCategoryTriggers) {
     if (lower.includes(normalize(trigger))) {
       const m =
-        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+adinda\s+kategori/) ||
-        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+isminde\s+kategori/) ||
-        lower.match(/kategori\s+([a-z0-9ğüşöçı\s-]+)/) ||
-        lower.match(/category\s+([a-z0-9\s-]+)/)
+        lower.match(/(.+?)\s+adinda\s+kategori/) ||
+        lower.match(/(.+?)\s+isminde\s+kategori/) ||
+        lower.match(/category\s+(.+)/)
 
       if (m?.[1]) {
-        const categoryName = m[1].trim()
-        operations.push({
-          type: "create_category",
-          categoryName,
-          newCategoryName: null,
-          channelName: null,
-          newChannelName: null,
-          channelType: null,
-          topic: null,
-          targetCategoryName: null,
-          baseName: null,
-          applySensibleDefaults: lower.includes("mantikli") || lower.includes("uygun") || lower.includes("sensible"),
-          permissions: []
-        })
+        const categoryName = cleanExtractedName(m[1])
+        if (categoryName) {
+          operations.push({
+            type: "create_category",
+            categoryName,
+            newCategoryName: null,
+            channelName: null,
+            newChannelName: null,
+            channelType: null,
+            topic: null,
+            targetCategoryName: null,
+            baseName: null,
+            applySensibleDefaults: lower.includes("mantikli") || lower.includes("uygun") || lower.includes("sensible"),
+            roleName: null,
+            color: null,
+            assignToRequester: false,
+            userLimit: null,
+            permissions: []
+          })
+        }
       }
       break
     }
@@ -1372,14 +1486,14 @@ function manualIntentParser(text, language) {
   for (const trigger of deleteCategoryTriggers) {
     if (lower.includes(normalize(trigger))) {
       const m =
-        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisini\s+sil/) ||
-        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategoriyi\s+sil/) ||
-        lower.match(/delete category\s+([a-z0-9\s-]+)/)
+        lower.match(/(.+?)\s+kategorisini\s+sil/) ||
+        lower.match(/(.+?)\s+kategoriyi\s+sil/) ||
+        lower.match(/delete category\s+(.+)/)
 
       if (m?.[1]) {
         operations.push({
           type: "delete_category",
-          categoryName: m[1].trim(),
+          categoryName: cleanExtractedName(m[1]),
           newCategoryName: null,
           channelName: null,
           newChannelName: null,
@@ -1388,6 +1502,10 @@ function manualIntentParser(text, language) {
           targetCategoryName: null,
           baseName: null,
           applySensibleDefaults: false,
+          roleName: null,
+          color: null,
+          assignToRequester: false,
+          userLimit: null,
           permissions: []
         })
       }
@@ -1398,12 +1516,10 @@ function manualIntentParser(text, language) {
   for (const trigger of createChannelTriggers) {
     if (lower.includes(normalize(trigger))) {
       const catMatch =
-        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisine/) ||
-        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisinde/) ||
-        lower.match(/under category\s+([a-z0-9\s-]+)/)
+        lower.match(/(.+?)\s+kategorisine/) ||
+        lower.match(/(.+?)\s+kategorisinde/) ||
+        lower.match(/under category\s+(.+)/)
 
-      const quoted = extractQuoted(text)
-      const count = parseCount(text)
       const wantsVoice = lower.includes("ses") || lower.includes("voice")
       const topicMatch =
         lower.match(/aciklamasi\s+(.+?)\s+olsun/) ||
@@ -1414,7 +1530,7 @@ function manualIntentParser(text, language) {
         for (const q of quoted) {
           operations.push({
             type: "create_channel",
-            categoryName: catMatch?.[1]?.trim() || null,
+            categoryName: catMatch?.[1] ? cleanExtractedName(catMatch[1]) : null,
             newCategoryName: null,
             channelName: q,
             newChannelName: null,
@@ -1423,30 +1539,41 @@ function manualIntentParser(text, language) {
             targetCategoryName: null,
             baseName: null,
             applySensibleDefaults: false,
+            roleName: null,
+            color: null,
+            assignToRequester: false,
+            userLimit: wantsVoice ? detectedUserLimit : null,
             permissions: []
           })
         }
       } else if (count && catMatch?.[1]) {
+        const cleanCategory = cleanExtractedName(catMatch[1])
         for (let i = 1; i <= count; i++) {
           operations.push({
             type: "create_channel",
-            categoryName: catMatch[1].trim(),
+            categoryName: cleanCategory,
             newCategoryName: null,
-            channelName: i === 1 ? "general" : `channel-${i}`,
+            channelName: wantsVoice
+              ? (i === 1 ? (language === "tr" ? "sesli-sohbet" : "voice-chat") : `voice-${i}`)
+              : (i === 1 ? (language === "tr" ? "genel" : "general") : `channel-${i}`),
             newChannelName: null,
             channelType: wantsVoice ? "voice" : "text",
-            topic: null,
+            topic: wantsVoice ? null : null,
             targetCategoryName: null,
             baseName: null,
             applySensibleDefaults: false,
+            roleName: null,
+            color: null,
+            assignToRequester: false,
+            userLimit: wantsVoice ? detectedUserLimit : null,
             permissions: []
           })
         }
 
-        if (topicMatch?.[1]) {
+        if (topicMatch?.[1] && !wantsVoice) {
           operations.push({
             type: "set_all_channel_topics_in_category",
-            categoryName: catMatch[1].trim(),
+            categoryName: cleanCategory,
             newCategoryName: null,
             channelName: null,
             newChannelName: null,
@@ -1455,43 +1582,14 @@ function manualIntentParser(text, language) {
             targetCategoryName: null,
             baseName: null,
             applySensibleDefaults: false,
-            permissions: []
-          })
-        }
-      } else {
-        const channelMatches = []
-        const regex = /([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:i|ı|ini|ını)?/g
-        let found
-        while ((found = regex.exec(lower)) !== null) {
-          const val = found[1].trim()
-          if (
-            val &&
-            !val.includes("kategori") &&
-            !val.includes("yeni") &&
-            !val.includes("tum") &&
-            !val.includes("tüm")
-          ) {
-            channelMatches.push(val)
-          }
-        }
-
-        for (const chName of uniqueArray(channelMatches)) {
-          operations.push({
-            type: "create_channel",
-            categoryName: catMatch?.[1]?.trim() || null,
-            newCategoryName: null,
-            channelName: chName,
-            newChannelName: null,
-            channelType: wantsVoice ? "voice" : "text",
-            topic: topicMatch?.[1]?.trim() || null,
-            targetCategoryName: null,
-            baseName: null,
-            applySensibleDefaults: false,
+            roleName: null,
+            color: null,
+            assignToRequester: false,
+            userLimit: null,
             permissions: []
           })
         }
       }
-
       break
     }
   }
@@ -1499,22 +1597,26 @@ function manualIntentParser(text, language) {
   for (const trigger of deleteChannelTriggers) {
     if (lower.includes(normalize(trigger))) {
       const m =
-        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanalini\s+sil/) ||
-        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanalını\s+sil/) ||
-        lower.match(/delete channel\s+([a-z0-9\s-]+)/)
+        lower.match(/(.+?)\s+kanalini\s+sil/) ||
+        lower.match(/(.+?)\s+kanalını\s+sil/) ||
+        lower.match(/delete channel\s+(.+)/)
 
       if (m?.[1]) {
         operations.push({
           type: "delete_channel",
           categoryName: null,
           newCategoryName: null,
-          channelName: m[1].trim(),
+          channelName: cleanExtractedName(m[1]),
           newChannelName: null,
           channelType: null,
           topic: null,
           targetCategoryName: null,
           baseName: null,
           applySensibleDefaults: false,
+          roleName: null,
+          color: null,
+          assignToRequester: false,
+          userLimit: null,
           permissions: []
         })
       }
@@ -1524,20 +1626,24 @@ function manualIntentParser(text, language) {
 
   if (lower.includes("kanal adini degistir") || lower.includes("kanal adını değiştir") || lower.includes("rename channel")) {
     const m =
-      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:inin|in|ıni|ini)?\s+adini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) ||
-      lower.match(/rename channel\s+([a-z0-9\s-]+)\s+to\s+([a-z0-9\s-]+)/)
+      lower.match(/(.+?)\s+kanal(?:inin|in|ıni|ini)?\s+adini\s+(.+?)\s+yap/) ||
+      lower.match(/rename channel\s+(.+?)\s+to\s+(.+)/)
     if (m?.[1] && m?.[2]) {
       operations.push({
         type: "rename_channel",
         categoryName: null,
         newCategoryName: null,
-        channelName: m[1].trim(),
-        newChannelName: m[2].trim(),
+        channelName: cleanExtractedName(m[1]),
+        newChannelName: cleanExtractedName(m[2]),
         channelType: null,
         topic: null,
         targetCategoryName: null,
         baseName: null,
         applySensibleDefaults: false,
+        roleName: null,
+        color: null,
+        assignToRequester: false,
+        userLimit: null,
         permissions: []
       })
     }
@@ -1545,13 +1651,13 @@ function manualIntentParser(text, language) {
 
   if (lower.includes("kategori adini degistir") || lower.includes("kategori adını değiştir") || lower.includes("rename category")) {
     const m =
-      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisinin\s+adini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) ||
-      lower.match(/rename category\s+([a-z0-9\s-]+)\s+to\s+([a-z0-9\s-]+)/)
+      lower.match(/(.+?)\s+kategorisinin\s+adini\s+(.+?)\s+yap/) ||
+      lower.match(/rename category\s+(.+?)\s+to\s+(.+)/)
     if (m?.[1] && m?.[2]) {
       operations.push({
         type: "rename_category",
-        categoryName: m[1].trim(),
-        newCategoryName: m[2].trim(),
+        categoryName: cleanExtractedName(m[1]),
+        newCategoryName: cleanExtractedName(m[2]),
         channelName: null,
         newChannelName: null,
         channelType: null,
@@ -1559,6 +1665,10 @@ function manualIntentParser(text, language) {
         targetCategoryName: null,
         baseName: null,
         applySensibleDefaults: false,
+        roleName: null,
+        color: null,
+        assignToRequester: false,
+        userLimit: null,
         permissions: []
       })
     }
@@ -1566,21 +1676,25 @@ function manualIntentParser(text, language) {
 
   if (lower.includes("kanal aciklamasini degistir") || lower.includes("kanal açıklamasını değiştir") || lower.includes("change channel topic")) {
     const m =
-      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:inin|in|ıni|ini)?\s+aciklamasini\s+(.+?)\s+yap/) ||
-      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:inin|in|ıni|ini)?\s+açıklamasını\s+(.+?)\s+yap/) ||
-      lower.match(/change channel topic\s+([a-z0-9\s-]+)\s+to\s+(.+)/)
+      lower.match(/(.+?)\s+kanal(?:inin|in|ıni|ini)?\s+aciklamasini\s+(.+?)\s+yap/) ||
+      lower.match(/(.+?)\s+kanal(?:inin|in|ıni|ini)?\s+açıklamasını\s+(.+?)\s+yap/) ||
+      lower.match(/change channel topic\s+(.+?)\s+to\s+(.+)/)
     if (m?.[1] && m?.[2]) {
       operations.push({
         type: "set_channel_topic",
         categoryName: null,
         newCategoryName: null,
-        channelName: m[1].trim(),
+        channelName: cleanExtractedName(m[1]),
         newChannelName: null,
         channelType: null,
         topic: m[2].trim(),
         targetCategoryName: null,
         baseName: null,
         applySensibleDefaults: false,
+        roleName: null,
+        color: null,
+        assignToRequester: false,
+        userLimit: null,
         permissions: []
       })
     }
@@ -1588,21 +1702,25 @@ function manualIntentParser(text, language) {
 
   if (lower.includes("kanali tasi") || lower.includes("kanalı taşı") || lower.includes("move channel")) {
     const m =
-      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:ini|ını)?\s+([a-z0-9ğüşöçı\s-]+?)\s+kategorisine\s+tasi/) ||
-      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:ini|ını)?\s+([a-z0-9ğüşöçı\s-]+?)\s+kategorisine\s+taşı/) ||
-      lower.match(/move channel\s+([a-z0-9\s-]+)\s+to\s+([a-z0-9\s-]+)/)
+      lower.match(/(.+?)\s+kanal(?:ini|ını)?\s+(.+?)\s+kategorisine\s+tasi/) ||
+      lower.match(/(.+?)\s+kanal(?:ini|ını)?\s+(.+?)\s+kategorisine\s+taşı/) ||
+      lower.match(/move channel\s+(.+?)\s+to\s+(.+)/)
     if (m?.[1] && m?.[2]) {
       operations.push({
         type: "move_channel",
         categoryName: null,
         newCategoryName: null,
-        channelName: m[1].trim(),
+        channelName: cleanExtractedName(m[1]),
         newChannelName: null,
         channelType: null,
         topic: null,
-        targetCategoryName: m[2].trim(),
+        targetCategoryName: cleanExtractedName(m[2]),
         baseName: null,
         applySensibleDefaults: false,
+        roleName: null,
+        color: null,
+        assignToRequester: false,
+        userLimit: null,
         permissions: []
       })
     }
@@ -1624,6 +1742,10 @@ function manualIntentParser(text, language) {
       targetCategoryName: null,
       baseName: null,
       applySensibleDefaults: false,
+      roleName: null,
+      color: null,
+      assignToRequester: false,
+      userLimit: null,
       permissions: []
     })
   }
@@ -1684,6 +1806,7 @@ async function aiIntentParser(question, language) {
               roleName: { type: ["string", "null"] },
               color: { type: ["string", "null"] },
               assignToRequester: { type: "boolean" },
+              userLimit: { type: ["number", "null"] },
               permissions: {
                 type: "array",
                 items: {
@@ -1712,6 +1835,7 @@ async function aiIntentParser(question, language) {
               "roleName",
               "color",
               "assignToRequester",
+              "userLimit",
               "permissions"
             ]
           }
@@ -1725,10 +1849,10 @@ async function aiIntentParser(question, language) {
     "You are a Discord server intent parser.",
     "Return only JSON matching the schema.",
     "Understand Turkish and English extremely well.",
-    "If the user asks for categories, channels, descriptions/topics, moving channels, deleting structure, roles, or colored roles, classify it as management.",
+    "If the user asks for categories, channels, voice channels, user limit for voice channels, descriptions/topics, moving channels, deleting structure, roles, or colored roles, classify it as management.",
     "For messages like 'create category x and make 4 channels inside it and give all of them description y', produce multiple operations in order.",
+    "For messages like 'create a 4 person voice channel inside squad', set channelType voice and userLimit 4.",
     "For messages like 'give me a purple role' or 'bana mor renkte rol ver', use create_role with assignToRequester true.",
-    "For messages like 'create purple pink red roles', create multiple create_role operations.",
     "If the user is just chatting, return isManagementRequest false and operations empty."
   ].join(" ")
 
@@ -2983,13 +3107,15 @@ async function executeManagementPlan(message, plan, language) {
             const uniqueName = uniqueChannelName(guild, category.id, ch.name, type)
             const permissionOverwrites = buildPermissionOverwrites(guild, op.permissions, member.id)
 
-            const createdChannel = await guild.channels.create({
+            const channelPayload = {
               name: uniqueName,
               type,
               parent: category.id,
               topic: type === ChannelType.GuildText ? ch.topic || undefined : undefined,
               permissionOverwrites: permissionOverwrites.length ? permissionOverwrites : undefined
-            })
+            }
+
+            const createdChannel = await guild.channels.create(channelPayload)
 
             results.push(language === "tr" ? `Kanal oluşturuldu: ${createdChannel.name}` : `Created channel: ${createdChannel.name}`)
           }
@@ -3041,15 +3167,35 @@ async function executeManagementPlan(message, plan, language) {
         const name = uniqueChannelName(guild, category?.id || null, rawName, type)
         const permissionOverwrites = buildPermissionOverwrites(guild, op.permissions, member.id)
 
-        const created = await guild.channels.create({
+        const createPayload = {
           name,
           type,
           parent: category?.id || undefined,
           topic: type === ChannelType.GuildText ? op.topic || undefined : undefined,
           permissionOverwrites: permissionOverwrites.length ? permissionOverwrites : undefined
-        })
+        }
 
-        results.push(language === "tr" ? `Kanal oluşturuldu: ${created.name}` : `Created channel: ${created.name}`)
+        if (type === ChannelType.GuildVoice && Number.isFinite(op.userLimit)) {
+          createPayload.userLimit = Math.max(0, Math.min(99, Number(op.userLimit)))
+        }
+
+        const created = await guild.channels.create(createPayload)
+
+        if (type === ChannelType.GuildVoice && Number.isFinite(op.userLimit) && typeof created.setUserLimit === "function") {
+          try {
+            await created.setUserLimit(Math.max(0, Math.min(99, Number(op.userLimit))))
+          } catch {}
+        }
+
+        if (type === ChannelType.GuildVoice && Number.isFinite(op.userLimit)) {
+          results.push(
+            language === "tr"
+              ? `Ses kanalı oluşturuldu: ${created.name} (${Math.max(0, Math.min(99, Number(op.userLimit)))} kişilik)`
+              : `Created voice channel: ${created.name} (${Math.max(0, Math.min(99, Number(op.userLimit)))} user limit)`
+          )
+        } else {
+          results.push(language === "tr" ? `Kanal oluşturuldu: ${created.name}` : `Created channel: ${created.name}`)
+        }
       }
 
       if (op.type === "delete_channel") {

@@ -16,9 +16,9 @@ const OpenAI = require("openai")
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.MessageContent
   ],
   allowedMentions: {
     repliedUser: false
@@ -29,15 +29,15 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
-const MODEL = process.env.MODEL || "gpt-4o-mini"
+const MODEL = process.env.MODEL || "gpt-5.4"
 const BOT_NAME = "Disogle"
 const FOUNDER_NAME = "Miraç Başyiğit"
 
 const BOT_IDENTITY_TR =
-  "Disogle, Miraç Başyiğit tarafından geliştirilen yapay zeka tabanlı bir Discord botudur. Soruları yanıtlayabilir, metin üretebilir, kod yazabilir, oyun oynatabilir ve sunucu yapısını yönetebilir."
+  "Disogle, Miraç Başyiğit tarafından geliştirilen yapay zeka tabanlı bir Discord botudur. Soruları yanıtlayabilir, metin üretebilir, kod yazabilir, oyun oynatabilir, rol yönetebilir ve sunucu yapısını yönetebilir."
 
 const BOT_IDENTITY_EN =
-  "Disogle is an AI-based Discord bot developed by Miraç Başyiğit. It can answer questions, generate text, write code, host games, and manage server structure."
+  "Disogle is an AI-based Discord bot developed by Miraç Başyiğit. It can answer questions, generate text, write code, host games, manage roles, and manage server structure."
 
 const DATA_DIR = path.join(__dirname, "data")
 const GUILD_SETTINGS_FILE = path.join(DATA_DIR, "guildSettings.json")
@@ -127,6 +127,44 @@ const wouldYouRatherEN = [
   "Would you rather be extremely smart or extremely charismatic?"
 ]
 
+const COLOR_ALIASES = {
+  tr: {
+    mor: "#8000ff",
+    lila: "#b57edc",
+    pembe: "#ff4fa3",
+    kirmizi: "#ff3b30",
+    kırmızı: "#ff3b30",
+    mavi: "#3b82f6",
+    lacivert: "#1e3a8a",
+    turkuaz: "#22d3ee",
+    yesil: "#22c55e",
+    yeşil: "#22c55e",
+    sari: "#facc15",
+    sarı: "#facc15",
+    turuncu: "#fb923c",
+    beyaz: "#ffffff",
+    siyah: "#111111",
+    gri: "#6b7280",
+    grii: "#6b7280"
+  },
+  en: {
+    purple: "#8000ff",
+    violet: "#8b5cf6",
+    pink: "#ff4fa3",
+    red: "#ff3b30",
+    blue: "#3b82f6",
+    navy: "#1e3a8a",
+    cyan: "#22d3ee",
+    green: "#22c55e",
+    yellow: "#facc15",
+    orange: "#fb923c",
+    white: "#ffffff",
+    black: "#111111",
+    gray: "#6b7280",
+    grey: "#6b7280"
+  }
+}
+
 function getGuildSettings(guildId) {
   if (!persistedGuildSettings[guildId]) {
     persistedGuildSettings[guildId] = {
@@ -179,7 +217,7 @@ function normalize(text) {
     .replace(/ş/g, "s")
     .replace(/ö/g, "o")
     .replace(/ç/g, "c")
-    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .replace(/[^\p{L}\p{N}\s#-]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
 }
@@ -195,6 +233,26 @@ function slugify(input) {
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
     .slice(0, 90)
+}
+
+function titleCaseRoleName(input) {
+  return String(input || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ")
+    .slice(0, 100)
+}
+
+function uniqueArray(arr) {
+  return [...new Set((Array.isArray(arr) ? arr : []).filter(Boolean))]
+}
+
+function splitSmart(text) {
+  return normalize(text)
+    .split(/\s+/)
+    .filter(Boolean)
 }
 
 function cleanMention(content, botId) {
@@ -240,18 +298,20 @@ function setCooldown(userId, ms) {
 }
 
 function detectLanguage(text) {
-  const lower = String(text || "").toLowerCase()
+  const lower = normalize(text)
 
   const trHints = [
-    "merhaba", "selam", "neden", "nasıl", "kurucun", "özel", "konuş",
-    "türkçe", "kanal", "kategori", "sil", "değiştir", "oluştur",
-    "naber", "yardım", "açıklama", "sunucu", "oyun", "bilmece"
+    "merhaba", "selam", "neden", "nasil", "kurucun", "ozel", "konus",
+    "turkce", "kanal", "kategori", "sil", "degistir", "olustur",
+    "rol", "renk", "yardim", "aciklama", "sunucu", "oyun", "bilmece",
+    "ver", "bana", "olsun", "hepsinin", "adinda", "adli", "yap"
   ]
 
   const enHints = [
     "hello", "what", "why", "how", "founder", "private", "talk",
     "english", "channel", "category", "delete", "rename", "create",
-    "server", "game", "riddle", "help", "description"
+    "role", "color", "server", "game", "riddle", "help", "description",
+    "give", "make", "set", "under", "inside", "all", "with"
   ]
 
   const trScore = trHints.filter(h => lower.includes(h)).length
@@ -259,7 +319,7 @@ function detectLanguage(text) {
 
   if (trScore > enScore) return "tr"
   if (enScore > trScore) return "en"
-  if (/[çğıöşüÇĞİÖŞÜ]/.test(text)) return "tr"
+  if (/[çğıöşüÇĞİÖŞÜ]/.test(String(text || ""))) return "tr"
   return "en"
 }
 
@@ -290,17 +350,17 @@ function detectTone(text) {
 
 function getReplyProfile(text) {
   const len = String(text || "").trim().length
-  if (len <= 8) return { maxTokens: 50, style: "very_short" }
-  if (len <= 20) return { maxTokens: 80, style: "short" }
-  if (len <= 70) return { maxTokens: 170, style: "medium" }
-  return { maxTokens: 320, style: "detailed" }
+  if (len <= 8) return { maxTokens: 70, style: "very_short" }
+  if (len <= 20) return { maxTokens: 110, style: "short" }
+  if (len <= 80) return { maxTokens: 220, style: "medium" }
+  return { maxTokens: 400, style: "detailed" }
 }
 
 function isLowSignal(text) {
   const clean = normalize(text)
   if (!clean) return true
-  if (clean.length <= 2) return true
-  if (/^(lan|la|hee|he|hm|hmm|ok|tamam|yo|yok|evet|hayir|hayır|xd|lol)$/i.test(clean)) return true
+  if (clean.length <= 1) return true
+  if (/^(lan|la|hee|he|hm|hmm|ok|tamam|yo|yok|evet|hayir|xd|lol)$/i.test(clean)) return true
   return false
 }
 
@@ -478,8 +538,8 @@ function buildStyleInstruction(language, tone, replyStyle) {
   const langPart = language === "tr" ? "Reply in natural Turkish." : "Reply in natural English."
 
   const toneMap = {
-    excited: "Match excitement if it is naturally present but do not overact.",
-    soft: "Be softer, calmer and more understanding.",
+    excited: "Match excitement if naturally present, but do not overact.",
+    soft: "Be calmer, gentler and more understanding.",
     casual: "Be natural and casual, but not childish.",
     helpful: "Be practical and focused.",
     neutral: "Stay calm, balanced and natural."
@@ -492,7 +552,7 @@ function buildStyleInstruction(language, tone, replyStyle) {
     detailed: "Be more detailed, but stay readable."
   }
 
-  return `${langPart} ${toneMap[tone]} ${sizeMap[replyStyle]} Sound human, warm and confident. Do not say you are an AI unless asked. Do not ask repetitive follow-up questions.`
+  return `${langPart} ${toneMap[tone]} ${sizeMap[replyStyle]} Sound human, warm and confident. Do not ask repetitive follow-up questions.`
 }
 
 function safeJsonParse(text) {
@@ -559,8 +619,7 @@ async function safeTyping(channel) {
     if (typeof channel.sendTyping !== "function") return false
     await channel.sendTyping()
     return true
-  } catch (error) {
-    console.error("safeTyping error:", error?.code, error?.message)
+  } catch {
     return false
   }
 }
@@ -579,6 +638,8 @@ async function safeSend(channel, content) {
 }
 
 async function safeReply(message, content) {
+  if (!message) return null
+
   try {
     if (message?.channel && canSendToChannel(message.channel) && canReadHistory(message.channel)) {
       return await message.reply({
@@ -613,13 +674,13 @@ function isOwner(member) {
   return member.guild.ownerId === member.id
 }
 
-function botCanManage(guild) {
+function botCanManageChannels(guild) {
   const me = guild.members.me
   if (!me) return false
   return me.permissions.has(PermissionFlagsBits.ManageChannels)
 }
 
-function botCanManageRolesEnough(guild) {
+function botCanManageRoles(guild) {
   const me = guild.members.me
   if (!me) return false
   return me.permissions.has(PermissionFlagsBits.ManageRoles)
@@ -638,7 +699,7 @@ function findCategoryByName(guild, name) {
 }
 
 function findAnyChannelByName(guild, name) {
-  const target = normalize(name)
+  const target = normalize(name).replace(/^#/, "")
   return guild.channels.cache.find(
     c => c.type !== ChannelType.GuildCategory && normalize(c.name) === target
   )
@@ -647,7 +708,7 @@ function findAnyChannelByName(guild, name) {
 function findChannelInCategoryByName(guild, categoryName, channelName) {
   const category = findCategoryByName(guild, categoryName)
   if (!category) return null
-  const target = normalize(channelName)
+  const target = normalize(channelName).replace(/^#/, "")
 
   return guild.channels.cache.find(
     c =>
@@ -699,7 +760,7 @@ function buildPermissionOverwrites(guild, permissions, requesterId) {
 }
 
 function uniqueChannelName(guild, parentId, desiredName, type) {
-  const base = slugify(desiredName) || "kanal"
+  const base = slugify(desiredName) || "channel"
   let name = base
   let i = 2
 
@@ -765,9 +826,331 @@ function defaultChannelsForCategory(name, language) {
       ]
 }
 
+function parseHexColor(text) {
+  const match = String(text || "").match(/#([0-9a-fA-F]{6})\b/)
+  if (!match) return null
+  return `#${match[1].toLowerCase()}`
+}
+
+function resolveNamedColor(word) {
+  const key = normalize(word)
+  return COLOR_ALIASES.tr[key] || COLOR_ALIASES.en[key] || null
+}
+
+function extractColorWords(text) {
+  const words = splitSmart(text)
+  const out = []
+
+  for (const word of words) {
+    const hex = resolveNamedColor(word)
+    if (hex) out.push({ word, hex })
+  }
+
+  const explicitHex = parseHexColor(text)
+  if (explicitHex) out.push({ word: explicitHex, hex: explicitHex })
+
+  return out
+}
+
+function roleNameFromColorWord(word, language) {
+  const w = normalize(word)
+  const trMap = {
+    mor: "Mor",
+    lila: "Lila",
+    pembe: "Pembe",
+    kirmizi: "Kırmızı",
+    kirmızı: "Kırmızı",
+    mavi: "Mavi",
+    lacivert: "Lacivert",
+    turkuaz: "Turkuaz",
+    yesil: "Yeşil",
+    sari: "Sarı",
+    turuncu: "Turuncu",
+    beyaz: "Beyaz",
+    siyah: "Siyah",
+    gri: "Gri"
+  }
+
+  const enMap = {
+    purple: "Purple",
+    violet: "Violet",
+    pink: "Pink",
+    red: "Red",
+    blue: "Blue",
+    navy: "Navy",
+    cyan: "Cyan",
+    green: "Green",
+    yellow: "Yellow",
+    orange: "Orange",
+    white: "White",
+    black: "Black",
+    gray: "Gray",
+    grey: "Grey"
+  }
+
+  if (trMap[w]) return trMap[w]
+  if (enMap[w]) return enMap[w]
+  if (/^#[0-9a-f]{6}$/i.test(word)) return word.toUpperCase()
+  return language === "tr" ? titleCaseRoleName(word) : titleCaseRoleName(word)
+}
+
+function extractQuoted(text) {
+  const matches = [...String(text || "").matchAll(/"([^"]+)"|'([^']+)'|`([^`]+)`/g)]
+  return matches
+    .map(m => m[1] || m[2] || m[3] || "")
+    .map(v => v.trim())
+    .filter(Boolean)
+}
+
+function parseCount(text) {
+  const n = normalize(text)
+  const digit = n.match(/\b(\d{1,2})\b/)
+  if (digit) return Math.max(1, Math.min(20, Number(digit[1])))
+
+  const wordMap = {
+    bir: 1, iki: 2, uc: 3, üç: 3, dort: 4, dört: 4, bes: 5, beş: 5,
+    alti: 6, altı: 6, yedi: 7, sekiz: 8, dokuz: 9, on: 10,
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+    seven: 7, eight: 8, nine: 9, ten: 10
+  }
+
+  for (const [k, v] of Object.entries(wordMap)) {
+    if (n.includes(` ${normalize(k)} `) || n.startsWith(`${normalize(k)} `) || n.endsWith(` ${normalize(k)}`) || n === normalize(k)) {
+      return v
+    }
+  }
+
+  return null
+}
+
+function looksLikeManagementRequest(text) {
+  const lower = normalize(text)
+
+  const hints = [
+    "kategori", "category",
+    "kanal", "channel",
+    "olustur", "create",
+    "sil", "delete",
+    "degistir", "rename",
+    "tası", "taşı", "move",
+    "aciklama", "açıklama", "topic", "description",
+    "rol", "role",
+    "ver", "give",
+    "renk", "color"
+  ]
+
+  return hints.some(h => lower.includes(normalize(h)))
+}
+
+function buildEmptyManagementPlan() {
+  return {
+    isManagementRequest: false,
+    operations: []
+  }
+}
+
+function parseRoleIntentManual(text, language) {
+  const lower = normalize(text)
+  const operations = []
+
+  const hasRoleWord = lower.includes("rol") || lower.includes("role")
+  if (!hasRoleWord) return operations
+
+  const colors = extractColorWords(text)
+  const quoted = extractQuoted(text)
+
+  const wantsGiveMe =
+    lower.includes("bana") ||
+    lower.includes("give me") ||
+    lower.includes("assign me") ||
+    lower.includes("ver") ||
+    lower.includes("ekle")
+
+  const wantsCreate =
+    lower.includes("olustur") ||
+    lower.includes("create") ||
+    lower.includes("ac") ||
+    lower.includes("make")
+
+  if (colors.length && wantsGiveMe) {
+    for (const item of uniqueArray(colors.map(c => JSON.stringify(c))).map(v => JSON.parse(v))) {
+      const roleName = roleNameFromColorWord(item.word, language)
+      operations.push({
+        type: "create_role",
+        roleName,
+        color: item.hex,
+        assignToRequester: true
+      })
+    }
+    return operations
+  }
+
+  if (colors.length && wantsCreate) {
+    for (const item of uniqueArray(colors.map(c => JSON.stringify(c))).map(v => JSON.parse(v))) {
+      const roleName = roleNameFromColorWord(item.word, language)
+      operations.push({
+        type: "create_role",
+        roleName,
+        color: item.hex,
+        assignToRequester: false
+      })
+    }
+    return operations
+  }
+
+  if (quoted.length && wantsGiveMe) {
+    for (const q of quoted) {
+      operations.push({
+        type: "create_role",
+        roleName: titleCaseRoleName(q),
+        color: parseHexColor(text),
+        assignToRequester: true
+      })
+    }
+    return operations
+  }
+
+  if (quoted.length && wantsCreate) {
+    for (const q of quoted) {
+      operations.push({
+        type: "create_role",
+        roleName: titleCaseRoleName(q),
+        color: parseHexColor(text),
+        assignToRequester: false
+      })
+    }
+    return operations
+  }
+
+  const singularTR = lower.match(/bana\s+([a-z0-9ğüşöçı# -]+?)\s+renkte\s+bir\s+rol\s+ver/)
+  if (singularTR?.[1]) {
+    const raw = singularTR[1].trim()
+    const color = resolveNamedColor(raw) || parseHexColor(raw)
+    operations.push({
+      type: "create_role",
+      roleName: roleNameFromColorWord(raw, language),
+      color,
+      assignToRequester: true
+    })
+    return operations
+  }
+
+  const singularEN = lower.match(/give me a\s+([a-z0-9# -]+?)\s+role/)
+  if (singularEN?.[1]) {
+    const raw = singularEN[1].trim()
+    const color = resolveNamedColor(raw) || parseHexColor(raw)
+    operations.push({
+      type: "create_role",
+      roleName: roleNameFromColorWord(raw, language),
+      color,
+      assignToRequester: true
+    })
+    return operations
+  }
+
+  return operations
+}
+
 function manualIntentParser(text, language) {
   const lower = normalize(text)
   const operations = []
+
+  const roleOps = parseRoleIntentManual(text, language)
+  if (roleOps.length) {
+    return { isManagementRequest: true, operations: roleOps }
+  }
+
+  const categoryPairMatch =
+    lower.match(/([a-z0-9ğüşöçı -]+?)\s+adinda\s+kategori\s+olustur/) ||
+    lower.match(/create\s+(?:a\s+)?category\s+(?:named\s+)?([a-z0-9 -]+)/)
+
+  const channelCount = parseCount(text)
+  const allTopicTR =
+    lower.match(/hepsinin\s+aciklamasi\s+(.+?)\s+olsun/) ||
+    lower.match(/hepsinin\s+açıklaması\s+(.+?)\s+olsun/)
+  const allTopicEN =
+    lower.match(/all(?: of them)?(?: channels)?(?: should)?(?: have)?(?: the)? description\s+(.+)/) ||
+    lower.match(/with(?: the)? description\s+(.+)/)
+
+  const categoryOnlyName =
+    lower.match(/([a-z0-9ğüşöçı -]+?)\s+adinda\s+kategori/) ||
+    lower.match(/([a-z0-9ğüşöçı -]+?)\s+isminde\s+kategori/) ||
+    lower.match(/category\s+([a-z0-9 -]+)/)
+
+  if (categoryPairMatch?.[1] || categoryOnlyName?.[1]) {
+    const rawCategory = (categoryPairMatch?.[1] || categoryOnlyName?.[1] || "").trim()
+    const categoryName = rawCategory.replace(/\s+(ve|and)\s*$/i, "").trim()
+
+    operations.push({
+      type: "create_category",
+      categoryName,
+      newCategoryName: null,
+      channelName: null,
+      newChannelName: null,
+      channelType: null,
+      topic: null,
+      targetCategoryName: null,
+      baseName: null,
+      applySensibleDefaults:
+        lower.includes("mantikli") ||
+        lower.includes("uygun") ||
+        lower.includes("sensible") ||
+        lower.includes("smart"),
+      permissions: []
+    })
+
+    const wantsChannelsInside =
+      lower.includes("kanallari olsun") ||
+      lower.includes("kanalları olsun") ||
+      lower.includes("kanallar olsun") ||
+      lower.includes("channels in it") ||
+      lower.includes("inside it") ||
+      lower.includes("under it") ||
+      lower.includes("create channels") ||
+      lower.includes("4 tane") ||
+      lower.includes("4 channel") ||
+      lower.includes("4 channels")
+
+    if (wantsChannelsInside && channelCount) {
+      for (let i = 1; i <= channelCount; i++) {
+        operations.push({
+          type: "create_channel",
+          categoryName,
+          newCategoryName: null,
+          channelName: i === 1 ? "general" : `channel-${i}`,
+          newChannelName: null,
+          channelType: "text",
+          topic: null,
+          targetCategoryName: null,
+          baseName: null,
+          applySensibleDefaults: false,
+          permissions: []
+        })
+      }
+
+      const topic = (allTopicTR?.[1] || allTopicEN?.[1] || "").trim()
+      if (topic) {
+        operations.push({
+          type: "set_all_channel_topics_in_category",
+          categoryName,
+          newCategoryName: null,
+          channelName: null,
+          newChannelName: null,
+          channelType: null,
+          topic,
+          targetCategoryName: null,
+          baseName: null,
+          applySensibleDefaults: false,
+          permissions: []
+        })
+      }
+
+      return {
+        isManagementRequest: true,
+        operations
+      }
+    }
+  }
 
   const createCategoryTriggers = [
     "kategori olustur",
@@ -800,7 +1183,7 @@ function manualIntentParser(text, language) {
     lower.includes("uygun kanallar") ||
     lower.includes("mantikli olanlari ac")
   ) {
-    const m = lower.match(/([a-z0-9ğüşöçı\s-]+?) adinda kategori/)
+    const m = lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+adinda\s+kategori/)
     if (m?.[1]) {
       operations.push({
         type: "create_category",
@@ -819,28 +1202,19 @@ function manualIntentParser(text, language) {
   }
 
   if (lower.includes("tum kanallarin ismini") || lower.includes("all channel names")) {
-    const categoryMatch = lower.match(/bu kategorideki|this category|(.+?) kategorisindeki/)
-    const nameMatch = lower.match(/ismini\s+([a-z0-9ğüşöçı\s-]+)\s+yap|name(?:s)?\s+to\s+([a-z0-9\s-]+)/)
-    let categoryName = null
-
-    const namedCat = lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisindeki tum kanallar/)
-    if (namedCat?.[1]) categoryName = namedCat[1].trim()
-    if (!categoryName && categoryMatch && !lower.includes("bu kategorideki")) categoryName = categoryMatch[1]?.trim() || null
-
-    let baseName = null
-    if (nameMatch) baseName = (nameMatch[1] || nameMatch[2] || "").trim()
-
-    if (baseName) {
+    const namedCat = lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisindeki\s+tum\s+kanallar/)
+    const nameMatch = lower.match(/ismini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) || lower.match(/name(?:s)?\s+to\s+([a-z0-9\s-]+)/)
+    if (namedCat?.[1] && nameMatch?.[1]) {
       operations.push({
         type: "rename_all_channels_in_category",
-        categoryName,
+        categoryName: namedCat[1].trim(),
         newCategoryName: null,
         channelName: null,
         newChannelName: null,
         channelType: null,
         topic: null,
         targetCategoryName: null,
-        baseName,
+        baseName: nameMatch[1].trim(),
         applySensibleDefaults: false,
         permissions: []
       })
@@ -853,7 +1227,7 @@ function manualIntentParser(text, language) {
     lower.includes("description change") ||
     lower.includes("change topic")
   ) {
-    const catMatch = lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisindeki/)
+    const catMatch = lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisindeki/)
     const topicMatch =
       lower.match(/aciklamasini\s+(.+?)\s+yap/) ||
       lower.match(/açıklamasını\s+(.+?)\s+yap/) ||
@@ -879,8 +1253,8 @@ function manualIntentParser(text, language) {
   for (const trigger of createCategoryTriggers) {
     if (lower.includes(normalize(trigger))) {
       const m =
-        lower.match(/([a-z0-9ğüşöçı\s-]+?) adinda kategori/) ||
-        lower.match(/([a-z0-9ğüşöçı\s-]+?) isminde kategori/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+adinda\s+kategori/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+isminde\s+kategori/) ||
         lower.match(/kategori\s+([a-z0-9ğüşöçı\s-]+)/) ||
         lower.match(/category\s+([a-z0-9\s-]+)/)
 
@@ -907,8 +1281,8 @@ function manualIntentParser(text, language) {
   for (const trigger of deleteCategoryTriggers) {
     if (lower.includes(normalize(trigger))) {
       const m =
-        lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisini sil/) ||
-        lower.match(/([a-z0-9ğüşöçı\s-]+?) kategoriyi sil/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisini\s+sil/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategoriyi\s+sil/) ||
         lower.match(/delete category\s+([a-z0-9\s-]+)/)
 
       if (m?.[1]) {
@@ -932,36 +1306,44 @@ function manualIntentParser(text, language) {
 
   for (const trigger of createChannelTriggers) {
     if (lower.includes(normalize(trigger))) {
-      const channelMatches = []
-      const regex = /([a-z0-9ğüşöçı\s-]+?) kanal(?:i|ı|ini|ını)?/g
-      let found
-      while ((found = regex.exec(lower)) !== null) {
-        const val = found[1].trim()
-        if (
-          val &&
-          !val.includes("kategori") &&
-          !val.includes("yeni") &&
-          !val.includes("tum") &&
-          !val.includes("tüm")
-        ) {
-          channelMatches.push(val)
-        }
-      }
-
       const catMatch =
-        lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisine/) ||
-        lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisinde/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisine/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisinde/) ||
         lower.match(/under category\s+([a-z0-9\s-]+)/)
 
-      if (channelMatches.length) {
-        for (const chName of channelMatches) {
+      const quoted = extractQuoted(text)
+      const count = parseCount(text)
+      const wantsVoice = lower.includes("ses") || lower.includes("voice")
+      const topicMatch =
+        lower.match(/aciklamasi\s+(.+?)\s+olsun/) ||
+        lower.match(/açıklaması\s+(.+?)\s+olsun/) ||
+        lower.match(/with(?: the)? topic\s+(.+)/)
+
+      if (quoted.length) {
+        for (const q of quoted) {
           operations.push({
             type: "create_channel",
             categoryName: catMatch?.[1]?.trim() || null,
             newCategoryName: null,
-            channelName: chName,
+            channelName: q,
             newChannelName: null,
-            channelType: lower.includes("ses") || lower.includes("voice") ? "voice" : "text",
+            channelType: wantsVoice ? "voice" : "text",
+            topic: topicMatch?.[1]?.trim() || null,
+            targetCategoryName: null,
+            baseName: null,
+            applySensibleDefaults: false,
+            permissions: []
+          })
+        }
+      } else if (count && catMatch?.[1]) {
+        for (let i = 1; i <= count; i++) {
+          operations.push({
+            type: "create_channel",
+            categoryName: catMatch[1].trim(),
+            newCategoryName: null,
+            channelName: i === 1 ? "general" : `channel-${i}`,
+            newChannelName: null,
+            channelType: wantsVoice ? "voice" : "text",
             topic: null,
             targetCategoryName: null,
             baseName: null,
@@ -969,7 +1351,56 @@ function manualIntentParser(text, language) {
             permissions: []
           })
         }
+
+        if (topicMatch?.[1]) {
+          operations.push({
+            type: "set_all_channel_topics_in_category",
+            categoryName: catMatch[1].trim(),
+            newCategoryName: null,
+            channelName: null,
+            newChannelName: null,
+            channelType: null,
+            topic: topicMatch[1].trim(),
+            targetCategoryName: null,
+            baseName: null,
+            applySensibleDefaults: false,
+            permissions: []
+          })
+        }
+      } else {
+        const channelMatches = []
+        const regex = /([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:i|ı|ini|ını)?/g
+        let found
+        while ((found = regex.exec(lower)) !== null) {
+          const val = found[1].trim()
+          if (
+            val &&
+            !val.includes("kategori") &&
+            !val.includes("yeni") &&
+            !val.includes("tum") &&
+            !val.includes("tüm")
+          ) {
+            channelMatches.push(val)
+          }
+        }
+
+        for (const chName of uniqueArray(channelMatches)) {
+          operations.push({
+            type: "create_channel",
+            categoryName: catMatch?.[1]?.trim() || null,
+            newCategoryName: null,
+            channelName: chName,
+            newChannelName: null,
+            channelType: wantsVoice ? "voice" : "text",
+            topic: topicMatch?.[1]?.trim() || null,
+            targetCategoryName: null,
+            baseName: null,
+            applySensibleDefaults: false,
+            permissions: []
+          })
+        }
       }
+
       break
     }
   }
@@ -977,8 +1408,8 @@ function manualIntentParser(text, language) {
   for (const trigger of deleteChannelTriggers) {
     if (lower.includes(normalize(trigger))) {
       const m =
-        lower.match(/([a-z0-9ğüşöçı\s-]+?) kanalini sil/) ||
-        lower.match(/([a-z0-9ğüşöçı\s-]+?) kanalını sil/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanalini\s+sil/) ||
+        lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanalını\s+sil/) ||
         lower.match(/delete channel\s+([a-z0-9\s-]+)/)
 
       if (m?.[1]) {
@@ -1002,7 +1433,7 @@ function manualIntentParser(text, language) {
 
   if (lower.includes("kanal adini degistir") || lower.includes("kanal adını değiştir") || lower.includes("rename channel")) {
     const m =
-      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:inin|in|ıni|ini)? adini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) ||
+      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:inin|in|ıni|ini)?\s+adini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) ||
       lower.match(/rename channel\s+([a-z0-9\s-]+)\s+to\s+([a-z0-9\s-]+)/)
     if (m?.[1] && m?.[2]) {
       operations.push({
@@ -1023,7 +1454,7 @@ function manualIntentParser(text, language) {
 
   if (lower.includes("kategori adini degistir") || lower.includes("kategori adını değiştir") || lower.includes("rename category")) {
     const m =
-      lower.match(/([a-z0-9ğüşöçı\s-]+?) kategorisinin adini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) ||
+      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kategorisinin\s+adini\s+([a-z0-9ğüşöçı\s-]+)\s+yap/) ||
       lower.match(/rename category\s+([a-z0-9\s-]+)\s+to\s+([a-z0-9\s-]+)/)
     if (m?.[1] && m?.[2]) {
       operations.push({
@@ -1044,8 +1475,8 @@ function manualIntentParser(text, language) {
 
   if (lower.includes("kanal aciklamasini degistir") || lower.includes("kanal açıklamasını değiştir") || lower.includes("change channel topic")) {
     const m =
-      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:inin|in|ıni|ini)? aciklamasini\s+(.+?)\s+yap/) ||
-      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:inin|in|ıni|ini)? açıklamasını\s+(.+?)\s+yap/) ||
+      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:inin|in|ıni|ini)?\s+aciklamasini\s+(.+?)\s+yap/) ||
+      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:inin|in|ıni|ini)?\s+açıklamasını\s+(.+?)\s+yap/) ||
       lower.match(/change channel topic\s+([a-z0-9\s-]+)\s+to\s+(.+)/)
     if (m?.[1] && m?.[2]) {
       operations.push({
@@ -1066,8 +1497,8 @@ function manualIntentParser(text, language) {
 
   if (lower.includes("kanali tasi") || lower.includes("kanalı taşı") || lower.includes("move channel")) {
     const m =
-      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:ini|ını)?\s+([a-z0-9ğüşöçı\s-]+?) kategorisine tasi/) ||
-      lower.match(/([a-z0-9ğüşöçı\s-]+?) kanal(?:ini|ını)?\s+([a-z0-9ğüşöçı\s-]+?) kategorisine taşı/) ||
+      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:ini|ını)?\s+([a-z0-9ğüşöçı\s-]+?)\s+kategorisine\s+tasi/) ||
+      lower.match(/([a-z0-9ğüşöçı\s-]+?)\s+kanal(?:ini|ını)?\s+([a-z0-9ğüşöçı\s-]+?)\s+kategorisine\s+taşı/) ||
       lower.match(/move channel\s+([a-z0-9\s-]+)\s+to\s+([a-z0-9\s-]+)/)
     if (m?.[1] && m?.[2]) {
       operations.push({
@@ -1107,76 +1538,139 @@ function manualIntentParser(text, language) {
   }
 
   if (!operations.length) {
-    return { isManagementRequest: false, operations: [] }
+    return buildEmptyManagementPlan()
   }
 
-  return { isManagementRequest: true, operations }
+  return {
+    isManagementRequest: true,
+    operations
+  }
 }
 
 async function aiIntentParser(question, language) {
-  const prompt = `
-You are a Discord server management intent parser.
-Return ONLY valid JSON.
-
-Schema:
-{
-  "isManagementRequest": boolean,
-  "operations": [
-    {
-      "type": "create_category" | "delete_category" | "rename_category" | "create_channel" | "delete_channel" | "rename_channel" | "set_channel_topic" | "move_channel" | "rename_all_channels_in_category" | "set_all_channel_topics_in_category" | "delete_all_structure",
-      "categoryName": string | null,
-      "newCategoryName": string | null,
-      "channelName": string | null,
-      "newChannelName": string | null,
-      "channelType": "text" | "voice" | null,
-      "topic": string | null,
-      "targetCategoryName": string | null,
-      "baseName": string | null,
-      "applySensibleDefaults": boolean,
-      "permissions": [
-        {
-          "subject": "everyone" | "requester" | string,
-          "allow": string[],
-          "deny": string[]
+  const schema = {
+    name: "disogle_management_plan",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        isManagementRequest: { type: "boolean" },
+        operations: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              type: {
+                type: "string",
+                enum: [
+                  "create_category",
+                  "delete_category",
+                  "rename_category",
+                  "create_channel",
+                  "delete_channel",
+                  "rename_channel",
+                  "set_channel_topic",
+                  "move_channel",
+                  "rename_all_channels_in_category",
+                  "set_all_channel_topics_in_category",
+                  "delete_all_structure",
+                  "create_role"
+                ]
+              },
+              categoryName: { type: ["string", "null"] },
+              newCategoryName: { type: ["string", "null"] },
+              channelName: { type: ["string", "null"] },
+              newChannelName: { type: ["string", "null"] },
+              channelType: {
+                type: ["string", "null"],
+                enum: ["text", "voice", "forum", null]
+              },
+              topic: { type: ["string", "null"] },
+              targetCategoryName: { type: ["string", "null"] },
+              baseName: { type: ["string", "null"] },
+              applySensibleDefaults: { type: "boolean" },
+              roleName: { type: ["string", "null"] },
+              color: { type: ["string", "null"] },
+              assignToRequester: { type: "boolean" },
+              permissions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    subject: { type: "string" },
+                    allow: { type: "array", items: { type: "string" } },
+                    deny: { type: "array", items: { type: "string" } }
+                  },
+                  required: ["subject", "allow", "deny"]
+                }
+              }
+            },
+            required: [
+              "type",
+              "categoryName",
+              "newCategoryName",
+              "channelName",
+              "newChannelName",
+              "channelType",
+              "topic",
+              "targetCategoryName",
+              "baseName",
+              "applySensibleDefaults",
+              "roleName",
+              "color",
+              "assignToRequester",
+              "permissions"
+            ]
+          }
         }
-      ]
+      },
+      required: ["isManagementRequest", "operations"]
     }
-  ]
-}
+  }
 
-Rules:
-- If the user wants server structure changes, set isManagementRequest true.
-- If the user asks for sensible channels, set applySensibleDefaults true.
-- If the user asks to rename all channels in a category to one base name, use rename_all_channels_in_category.
-- If the user asks to change all text channel descriptions in a category, use set_all_channel_topics_in_category.
-- If the user asks to delete everything, use delete_all_structure.
-- Use Discord.js PermissionFlagsBits names only.
-- Return JSON only.
-- Keep the operation list precise and minimal.
-- If the message is normal conversation, return false and empty operations.
+  const prompt = [
+    "You are a Discord server intent parser.",
+    "Return only JSON matching the schema.",
+    "Understand Turkish and English extremely well.",
+    "If the user asks for categories, channels, descriptions/topics, moving channels, deleting structure, roles, or colored roles, classify it as management.",
+    "For messages like 'create category x and make 4 channels inside it and give all of them description y', produce multiple operations in order.",
+    "For messages like 'give me a purple role' or 'bana mor renkte rol ver', use create_role with assignToRequester true.",
+    "For messages like 'create purple pink red roles', create multiple create_role operations.",
+    "If the user is just chatting, return isManagementRequest false and operations empty."
+  ].join(" ")
 
-User message:
-${question}
-
-Language:
-${language}
-`
-
-  const response = await openai.chat.completions.create({
+  const response = await openai.responses.create({
     model: MODEL,
-    temperature: 0.1,
-    max_tokens: 600,
-    messages: [
-      { role: "system", content: "Return only valid JSON." },
-      { role: "user", content: prompt }
-    ]
+    input: [
+      {
+        role: "system",
+        content: [{ type: "input_text", text: prompt }]
+      },
+      {
+        role: "user",
+        content: [{ type: "input_text", text: `Language: ${language}\nUser message: ${question}` }]
+      }
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: schema.name,
+        schema: schema.schema
+      }
+    }
   })
 
-  const content = response.choices?.[0]?.message?.content?.trim() || ""
+  const content =
+    response.output_text ||
+    response.output?.[0]?.content?.[0]?.text ||
+    ""
+
   const parsed = safeJsonParse(content)
 
   if (!parsed || !Array.isArray(parsed.operations)) {
-    return { isManagementRequest: false, operations: [] }
+    return buildEmptyManagementPlan()
   }
 
   return parsed
@@ -1186,19 +1680,25 @@ async function detectManagementPlan(question, language) {
   const manual = manualIntentParser(question, language)
   if (manual.isManagementRequest) return manual
 
+  if (!looksLikeManagementRequest(question)) {
+    return buildEmptyManagementPlan()
+  }
+
   try {
     const ai = await aiIntentParser(question, language)
     if (ai.isManagementRequest) return ai
-  } catch {}
+  } catch (error) {
+    console.error("aiIntentParser error:", error?.message || error)
+  }
 
-  return { isManagementRequest: false, operations: [] }
+  return buildEmptyManagementPlan()
 }
 
 async function createPrivateChannel(message, language) {
   const guild = message.guild
   const member = message.member
 
-  if (!botCanManage(guild)) {
+  if (!botCanManageChannels(guild)) {
     await safeReply(
       message,
       language === "tr"
@@ -1436,21 +1936,74 @@ async function handleGameMessage(message, game) {
   return "handled"
 }
 
+function canBotAssignRole(guild, role) {
+  const me = guild.members.me
+  if (!me || !role) return false
+  return me.roles.highest.position > role.position
+}
+
+function normalizeHexToInt(hex) {
+  if (!hex) return undefined
+  const clean = String(hex).replace("#", "")
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return undefined
+  return parseInt(clean, 16)
+}
+
+async function ensureRole(guild, roleName, colorHex) {
+  const existing = getRoleByName(guild, roleName)
+  if (existing) return { role: existing, created: false }
+
+  const role = await guild.roles.create({
+    name: titleCaseRoleName(roleName),
+    color: normalizeHexToInt(colorHex)
+  })
+
+  return { role, created: true }
+}
+
 async function executeManagementPlan(message, plan, language) {
   const guild = message.guild
   const member = message.member
 
-  if (!hasAdminAccess(member)) {
+  const needsChannelPower = plan.operations.some(op =>
+    [
+      "create_category",
+      "delete_category",
+      "rename_category",
+      "create_channel",
+      "delete_channel",
+      "rename_channel",
+      "set_channel_topic",
+      "move_channel",
+      "rename_all_channels_in_category",
+      "set_all_channel_topics_in_category",
+      "delete_all_structure"
+    ].includes(op.type)
+  )
+
+  const needsRolePower = plan.operations.some(op => op.type === "create_role")
+
+  if (needsChannelPower && !hasAdminAccess(member)) {
     await safeReply(
       message,
       language === "tr"
-        ? "Bunu sadece yönetici yetkisi olan biri kullanabilir."
-        : "Only someone with administrator permission can use that."
+        ? "Kanal ve kategori yönetimi için kullanıcının yönetici yetkisi olmalı."
+        : "Channel and category management requires administrator permission."
     )
     return true
   }
 
-  if (!botCanManage(guild)) {
+  if (needsRolePower && !hasAdminAccess(member)) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Rol oluşturma ve rol verme işlemleri için yönetici yetkisi gerekli."
+        : "Creating and assigning roles requires administrator permission."
+    )
+    return true
+  }
+
+  if (needsChannelPower && !botCanManageChannels(guild)) {
     await safeReply(
       message,
       language === "tr"
@@ -1460,10 +2013,55 @@ async function executeManagementPlan(message, plan, language) {
     return true
   }
 
+  if (needsRolePower && !botCanManageRoles(guild)) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Rol işlemleri için bende Manage Roles yetkisi olmalı."
+        : "I need Manage Roles permission for role actions."
+    )
+    return true
+  }
+
   const results = []
 
   for (const op of plan.operations) {
     try {
+      if (op.type === "create_role") {
+        const roleName = titleCaseRoleName(op.roleName || (language === "tr" ? "Yeni Rol" : "New Role"))
+        const colorHex = op.color || undefined
+        const { role, created } = await ensureRole(guild, roleName, colorHex)
+
+        if (colorHex && role.color !== normalizeHexToInt(colorHex) && canBotAssignRole(guild, role)) {
+          try {
+            await role.setColor(normalizeHexToInt(colorHex))
+          } catch {}
+        }
+
+        if (op.assignToRequester) {
+          if (!canBotAssignRole(guild, role)) {
+            results.push(
+              language === "tr"
+                ? `Rol oluşturuldu ama bana göre daha yüksek kaldığı için veremedim: ${role.name}`
+                : `Role was created but I could not assign it because of role hierarchy: ${role.name}`
+            )
+          } else {
+            await member.roles.add(role)
+            results.push(
+              language === "tr"
+                ? `${created ? "Rol oluşturuldu ve verildi" : "Rol verildi"}: ${role.name}`
+                : `${created ? "Created and assigned role" : "Assigned role"}: ${role.name}`
+            )
+          }
+        } else {
+          results.push(
+            language === "tr"
+              ? `${created ? "Rol oluşturuldu" : "Rol zaten vardı"}: ${role.name}`
+              : `${created ? "Created role" : "Role already existed"}: ${role.name}`
+          )
+        }
+      }
+
       if (op.type === "create_category") {
         const rawName = op.categoryName || (language === "tr" ? "Yeni Kategori" : "New Category")
         let category = findCategoryByName(guild, rawName)
@@ -1475,9 +2073,9 @@ async function executeManagementPlan(message, plan, language) {
             type: ChannelType.GuildCategory,
             permissionOverwrites: permissionOverwrites.length ? permissionOverwrites : undefined
           })
-          results.push(language === "tr" ? `Kategori oluşturuldu: ${category}` : `Created category: ${category.name}`)
+          results.push(language === "tr" ? `Kategori oluşturuldu: ${category.name}` : `Created category: ${category.name}`)
         } else {
-          results.push(language === "tr" ? `Kategori zaten vardı: ${category}` : `Category already existed: ${category.name}`)
+          results.push(language === "tr" ? `Kategori zaten vardı: ${category.name}` : `Category already existed: ${category.name}`)
         }
 
         if (op.applySensibleDefaults) {
@@ -1495,7 +2093,7 @@ async function executeManagementPlan(message, plan, language) {
               permissionOverwrites: permissionOverwrites.length ? permissionOverwrites : undefined
             })
 
-            results.push(language === "tr" ? `Kanal oluşturuldu: ${createdChannel}` : `Created channel: ${createdChannel.name}`)
+            results.push(language === "tr" ? `Kanal oluşturuldu: ${createdChannel.name}` : `Created channel: ${createdChannel.name}`)
           }
         }
       }
@@ -1522,7 +2120,7 @@ async function executeManagementPlan(message, plan, language) {
         } else {
           const newName = slugify(op.newCategoryName || "kategori")
           await category.setName(newName)
-          results.push(language === "tr" ? `Kategori adı değiştirildi: ${category}` : `Renamed category to: ${newName}`)
+          results.push(language === "tr" ? `Kategori adı değiştirildi: ${newName}` : `Renamed category to: ${newName}`)
         }
       }
 
@@ -1536,7 +2134,7 @@ async function executeManagementPlan(message, plan, language) {
               name: slugify(op.categoryName),
               type: ChannelType.GuildCategory
             })
-            results.push(language === "tr" ? `Kategori oluşturuldu: ${category}` : `Created category: ${category.name}`)
+            results.push(language === "tr" ? `Kategori oluşturuldu: ${category.name}` : `Created category: ${category.name}`)
           }
         }
 
@@ -1553,7 +2151,7 @@ async function executeManagementPlan(message, plan, language) {
           permissionOverwrites: permissionOverwrites.length ? permissionOverwrites : undefined
         })
 
-        results.push(language === "tr" ? `Kanal oluşturuldu: ${created}` : `Created channel: ${created.name}`)
+        results.push(language === "tr" ? `Kanal oluşturuldu: ${created.name}` : `Created channel: ${created.name}`)
       }
 
       if (op.type === "delete_channel") {
@@ -1588,7 +2186,7 @@ async function executeManagementPlan(message, plan, language) {
         } else {
           const newName = uniqueChannelName(guild, channel.parentId, op.newChannelName || "kanal", channel.type)
           await channel.setName(newName)
-          results.push(language === "tr" ? `Kanal adı değiştirildi: #${newName}` : `Renamed channel to: ${newName}`)
+          results.push(language === "tr" ? `Kanal adı değiştirildi: ${newName}` : `Renamed channel to: ${newName}`)
         }
       }
 
@@ -1607,7 +2205,7 @@ async function executeManagementPlan(message, plan, language) {
           results.push(language === "tr" ? `Açıklama sadece yazı kanallarında değiştirilebilir: ${channel.name}` : `Topic can only be changed on text channels: ${channel.name}`)
         } else {
           await channel.setTopic(op.topic || "")
-          results.push(language === "tr" ? `Kanal açıklaması değiştirildi: #${channel.name}` : `Updated topic for: ${channel.name}`)
+          results.push(language === "tr" ? `Kanal açıklaması değiştirildi: ${channel.name}` : `Updated topic for: ${channel.name}`)
         }
       }
 
@@ -1629,11 +2227,11 @@ async function executeManagementPlan(message, plan, language) {
               name: slugify(op.targetCategoryName || "kategori"),
               type: ChannelType.GuildCategory
             })
-            results.push(language === "tr" ? `Hedef kategori oluşturuldu: ${targetCategory}` : `Created target category: ${targetCategory.name}`)
+            results.push(language === "tr" ? `Hedef kategori oluşturuldu: ${targetCategory.name}` : `Created target category: ${targetCategory.name}`)
           }
 
           await channel.setParent(targetCategory.id)
-          results.push(language === "tr" ? `Kanal taşındı: #${channel.name} -> ${targetCategory}` : `Moved channel ${channel.name} to ${targetCategory.name}`)
+          results.push(language === "tr" ? `Kanal taşındı: ${channel.name} -> ${targetCategory.name}` : `Moved channel ${channel.name} to ${targetCategory.name}`)
         }
       }
 
@@ -1664,7 +2262,7 @@ async function executeManagementPlan(message, plan, language) {
               await ch.setName(nextName)
               index++
             }
-            results.push(language === "tr" ? `Kategorideki tüm kanallar yeniden adlandırıldı: ${category}` : `Renamed all channels in category: ${category.name}`)
+            results.push(language === "tr" ? `Kategorideki tüm kanallar yeniden adlandırıldı: ${category.name}` : `Renamed all channels in category: ${category.name}`)
           }
         }
       }
@@ -1692,7 +2290,7 @@ async function executeManagementPlan(message, plan, language) {
             for (const [, ch] of children) {
               await ch.setTopic(op.topic || "")
             }
-            results.push(language === "tr" ? `Kategorideki uygun kanalların açıklamaları değiştirildi: ${category}` : `Updated topics in category: ${category.name}`)
+            results.push(language === "tr" ? `Kategorideki yazı kanallarının açıklamaları güncellendi: ${category.name}` : `Updated topics in category: ${category.name}`)
           }
         }
       }
@@ -1792,30 +2390,43 @@ async function getChatReply(question, language, tone, replyProfile, userState, f
   const recent = userState.recentMessages.slice(-6).join("\n")
   const styleInstruction = buildStyleInstruction(language, tone, replyProfile.style)
 
-  const response = await openai.chat.completions.create({
+  const response = await openai.responses.create({
     model: MODEL,
-    temperature: 0.72,
-    max_tokens: replyProfile.maxTokens,
-    messages: [
+    input: [
       {
         role: "system",
-        content:
-          `You are ${BOT_NAME}, a powerful Discord AI developed by ${FOUNDER_NAME}. You can answer questions, generate text, write code, help with decisions, host mini games, manage server structure, and talk like a natural human assistant. You are warm, sharp, socially aware, and concise by default. If asked who you are, you may say: "${BOT_IDENTITY_EN}" If asked about your founder, say your founder is ${FOUNDER_NAME}. If the user wants a private talk, say you can open a private room. Respect the user's language and the server forced language if present. ${styleInstruction}`
+        content: [{
+          type: "input_text",
+          text:
+            `You are ${BOT_NAME}, a powerful Discord AI developed by ${FOUNDER_NAME}. ` +
+            `You can answer questions, generate text, write code, help with decisions, host mini games, manage roles, manage server structure, and talk like a natural human assistant. ` +
+            `You are warm, sharp, socially aware, and concise by default. ` +
+            `If asked who you are, you may say: "${BOT_IDENTITY_EN}" ` +
+            `If asked about your founder, say your founder is ${FOUNDER_NAME}. ` +
+            `If the user wants a private talk, say you can open a private room. ` +
+            `Respect the user's language and the server forced language if present. ${styleInstruction}`
+        }]
       },
       {
         role: "system",
-        content:
-          `Recent context from this same user:\n${recent || "No recent context."}\n\nThis is ${firstTime ? "the first meaningful interaction with this user today" : "not the first interaction with this user today"}. If it is the first one, a very brief greeting is okay. Otherwise, answer directly.\n\nServer forced language: ${guildSettings.forcedLanguage || "none"}.`
+        content: [{
+          type: "input_text",
+          text:
+            `Recent context from this same user:\n${recent || "No recent context."}\n\n` +
+            `This is ${firstTime ? "the first meaningful interaction with this user today" : "not the first interaction with this user today"}. ` +
+            `If it is the first one, a very brief greeting is okay. Otherwise, answer directly.\n\n` +
+            `Server forced language: ${guildSettings.forcedLanguage || "none"}.`
+        }]
       },
       {
         role: "user",
-        content: question
+        content: [{ type: "input_text", text: question }]
       }
     ]
   })
 
   return (
-    response.choices?.[0]?.message?.content?.trim() ||
+    response.output_text?.trim() ||
     (language === "tr"
       ? "Şu an uygun bir cevap üretemedim."
       : "I couldn't generate a response right now.")
@@ -1942,7 +2553,7 @@ client.on(Events.MessageCreate, async message => {
     setTimeout(() => repliedMessages.delete(message.id), 12000)
 
     if (isOnCooldown(message.author.id)) return
-    setCooldown(message.author.id, 1200)
+    setCooldown(message.author.id, 900)
 
     let question = message.content
     if (message.mentions.has(client.user)) {
@@ -2026,7 +2637,7 @@ client.on(Events.MessageCreate, async message => {
     const reply = await getChatReply(question, language, tone, replyProfile, state, firstTime, guildSettings)
 
     greetedUsers.add(message.author.id)
-    await safeReply(reply ? message : null, reply)
+    await safeReply(message, reply)
   } catch (error) {
     console.error("MESSAGE_CREATE_FATAL:", error)
     try {

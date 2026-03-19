@@ -34,14 +34,15 @@ const BOT_NAME = "Disogle"
 const FOUNDER_NAME = "Miraç Başyiğit"
 
 const BOT_IDENTITY_TR =
-  "Disogle, Miraç Başyiğit tarafından geliştirilen yapay zeka tabanlı bir Discord botudur. Soruları yanıtlayabilir, metin üretebilir, kod yazabilir, oyun oynatabilir, rol yönetebilir ve sunucu yapısını yönetebilir."
+  "Disogle, Miraç Başyiğit tarafından geliştirilen yapay zeka tabanlı bir Discord botudur. Soruları yanıtlayabilir, metin üretebilir, kod yazabilir, oyun oynatabilir, rol yönetebilir, moderasyon yapabilir ve sunucu yapısını yönetebilir."
 
 const BOT_IDENTITY_EN =
-  "Disogle is an AI-based Discord bot developed by Miraç Başyiğit. It can answer questions, generate text, write code, host games, manage roles, and manage server structure."
+  "Disogle is an AI-based Discord bot developed by Miraç Başyiğit. It can answer questions, generate text, write code, host games, manage roles, moderate users, and manage server structure."
 
 const DATA_DIR = path.join(__dirname, "data")
 const GUILD_SETTINGS_FILE = path.join(DATA_DIR, "guildSettings.json")
 const USER_MEMORY_FILE = path.join(DATA_DIR, "userMemory.json")
+const MODERATION_STATE_FILE = path.join(DATA_DIR, "moderationState.json")
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
 
@@ -66,11 +67,14 @@ function writeJson(file, data) {
 
 const persistedGuildSettings = readJson(GUILD_SETTINGS_FILE, {})
 const persistedUserMemory = readJson(USER_MEMORY_FILE, {})
+const persistedModerationState = readJson(MODERATION_STATE_FILE, {})
 
 const repliedMessages = new Set()
 const userCooldowns = new Map()
 const greetedUsers = new Set()
 const activeGames = new Map()
+const spamTracker = new Map()
+const moderationActionCooldown = new Map()
 
 const riddles = [
   {
@@ -165,16 +169,95 @@ const COLOR_ALIASES = {
   }
 }
 
+function saveModerationState() {
+  writeJson(MODERATION_STATE_FILE, persistedModerationState)
+}
+
+function getGuildModerationState(guildId) {
+  if (!persistedModerationState[guildId]) {
+    persistedModerationState[guildId] = {
+      warns: {},
+      settings: {
+        warnSystemEnabled: true,
+        autoPunishments: [
+          {
+            warnCount: 3,
+            action: "mute",
+            durationMs: 15 * 60 * 1000
+          },
+          {
+            warnCount: 5,
+            action: "kick",
+            durationMs: null
+          },
+          {
+            warnCount: 7,
+            action: "ban",
+            durationMs: null
+          }
+        ]
+      }
+    }
+    saveModerationState()
+  }
+
+  if (!persistedModerationState[guildId].warns) {
+    persistedModerationState[guildId].warns = {}
+  }
+
+  if (!persistedModerationState[guildId].settings) {
+    persistedModerationState[guildId].settings = {
+      warnSystemEnabled: true,
+      autoPunishments: [
+        {
+          warnCount: 3,
+          action: "mute",
+          durationMs: 15 * 60 * 1000
+        },
+        {
+          warnCount: 5,
+          action: "kick",
+          durationMs: null
+        },
+        {
+          warnCount: 7,
+          action: "ban",
+          durationMs: null
+        }
+      ]
+    }
+  }
+
+  return persistedModerationState[guildId]
+}
+
 function getGuildSettings(guildId) {
   if (!persistedGuildSettings[guildId]) {
     persistedGuildSettings[guildId] = {
       forcedLanguage: null,
       forcedLanguageBy: null,
       welcomeEnabled: false,
-      welcomeChannelId: null
+      welcomeChannelId: null,
+      moderation: {
+        spamAutoMuteEnabled: true,
+        spamMessageLimit: 6,
+        spamWindowMs: 8000,
+        spamMuteMs: 15 * 60 * 1000
+      }
     }
     writeJson(GUILD_SETTINGS_FILE, persistedGuildSettings)
   }
+
+  if (!persistedGuildSettings[guildId].moderation) {
+    persistedGuildSettings[guildId].moderation = {
+      spamAutoMuteEnabled: true,
+      spamMessageLimit: 6,
+      spamWindowMs: 8000,
+      spamMuteMs: 15 * 60 * 1000
+    }
+    writeJson(GUILD_SETTINGS_FILE, persistedGuildSettings)
+  }
+
   return persistedGuildSettings[guildId]
 }
 
@@ -217,7 +300,7 @@ function normalize(text) {
     .replace(/ş/g, "s")
     .replace(/ö/g, "o")
     .replace(/ç/g, "c")
-    .replace(/[^\p{L}\p{N}\s#-]/gu, " ")
+    .replace(/[^\p{L}\p{N}\s#@-]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
 }
@@ -304,14 +387,16 @@ function detectLanguage(text) {
     "merhaba", "selam", "neden", "nasil", "kurucun", "ozel", "konus",
     "turkce", "kanal", "kategori", "sil", "degistir", "olustur",
     "rol", "renk", "yardim", "aciklama", "sunucu", "oyun", "bilmece",
-    "ver", "bana", "olsun", "hepsinin", "adinda", "adli", "yap"
+    "ver", "bana", "olsun", "hepsinin", "adinda", "adli", "yap",
+    "banla", "kickle", "sustur", "uyar", "warn", "mute", "yasakla"
   ]
 
   const enHints = [
     "hello", "what", "why", "how", "founder", "private", "talk",
     "english", "channel", "category", "delete", "rename", "create",
     "role", "color", "server", "game", "riddle", "help", "description",
-    "give", "make", "set", "under", "inside", "all", "with"
+    "give", "make", "set", "under", "inside", "all", "with",
+    "ban", "kick", "mute", "timeout", "warn", "unmute"
   ]
 
   const trScore = trHints.filter(h => lower.includes(h)).length
@@ -684,6 +769,12 @@ function botCanManageRoles(guild) {
   const me = guild.members.me
   if (!me) return false
   return me.permissions.has(PermissionFlagsBits.ManageRoles)
+}
+
+function botHasPermission(guild, permission) {
+  const me = guild.members.me
+  if (!me) return false
+  return me.permissions.has(permission)
 }
 
 function getRoleByName(guild, roleName) {
@@ -1694,6 +1785,813 @@ async function detectManagementPlan(question, language) {
   return buildEmptyManagementPlan()
 }
 
+function buildEmptyModerationPlan() {
+  return {
+    isModerationRequest: false,
+    action: null,
+    durationMs: null,
+    reason: null,
+    targetId: null
+  }
+}
+
+function buildEmptyWarnPlan() {
+  return {
+    isWarnRequest: false,
+    action: null,
+    targetId: null,
+    amount: 1,
+    reason: null,
+    threshold: null,
+    punishmentAction: null,
+    punishmentDurationMs: null,
+    enable: null
+  }
+}
+
+function parseDurationMs(text) {
+  const lower = normalize(text)
+
+  const minuteMatch = lower.match(/(\d+)\s*(dakika|dk|minute|min)/)
+  if (minuteMatch) return Number(minuteMatch[1]) * 60 * 1000
+
+  const hourMatch = lower.match(/(\d+)\s*(saat|hour|hr)/)
+  if (hourMatch) return Number(hourMatch[1]) * 60 * 60 * 1000
+
+  const dayMatch = lower.match(/(\d+)\s*(gun|gün|day)/)
+  if (dayMatch) return Number(dayMatch[1]) * 24 * 60 * 60 * 1000
+
+  if (lower.includes("15 dak")) return 15 * 60 * 1000
+  if (lower.includes("10 dak")) return 10 * 60 * 1000
+  if (lower.includes("5 dak")) return 5 * 60 * 1000
+
+  return null
+}
+
+function extractReason(text, language) {
+  const lower = String(text || "")
+
+  const trMatch =
+    lower.match(/sebep[:=]\s*(.+)$/i) ||
+    lower.match(/neden[:=]\s*(.+)$/i) ||
+    lower.match(/gerekce[:=]\s*(.+)$/i) ||
+    lower.match(/gerekçe[:=]\s*(.+)$/i)
+
+  if (trMatch?.[1]) return trMatch[1].trim().slice(0, 300)
+
+  const enMatch =
+    lower.match(/reason[:=]\s*(.+)$/i) ||
+    lower.match(/because\s+(.+)$/i)
+
+  if (enMatch?.[1]) return enMatch[1].trim().slice(0, 300)
+
+  return language === "tr" ? "Disogle moderasyon işlemi" : "Disogle moderation action"
+}
+
+function detectModerationPlan(message, question, language) {
+  const lower = normalize(question)
+  const target = message.mentions.members?.first() || null
+
+  if (!target) return buildEmptyModerationPlan()
+
+  const isBan =
+    lower.includes(" banla") ||
+    lower.startsWith("banla") ||
+    lower.includes("yasakla") ||
+    lower.includes("ban ") ||
+    lower.startsWith("ban ")
+
+  const isKick =
+    lower.includes("kickle") ||
+    lower.includes("kick at") ||
+    lower.includes("kick ") ||
+    lower.includes("sunucudan at") ||
+    lower.includes("çıkar") ||
+    lower.includes("cikar")
+
+  const isUnmute =
+    lower.includes("unmute") ||
+    lower.includes("mute kaldir") ||
+    lower.includes("muteyi kaldir") ||
+    lower.includes("susturmayi kaldir") ||
+    lower.includes("timeout kaldir") ||
+    lower.includes("susturmayi ac")
+
+  const isMute =
+    !isUnmute &&
+    (
+      lower.includes("mute") ||
+      lower.includes("sustur") ||
+      lower.includes("timeout")
+    )
+
+  if (!isBan && !isKick && !isMute && !isUnmute) {
+    return buildEmptyModerationPlan()
+  }
+
+  let action = null
+  if (isBan) action = "ban"
+  else if (isKick) action = "kick"
+  else if (isUnmute) action = "unmute"
+  else if (isMute) action = "mute"
+
+  let durationMs = parseDurationMs(question)
+  if (action === "mute" && !durationMs) durationMs = 15 * 60 * 1000
+
+  return {
+    isModerationRequest: true,
+    action,
+    durationMs,
+    reason: extractReason(question, language),
+    targetId: target.id
+  }
+}
+
+function detectWarnPlan(message, question, language) {
+  const lower = normalize(question)
+  const target = message.mentions.members?.first() || null
+
+  const systemOn =
+    lower.includes("warn sistemi ac") ||
+    lower.includes("uyari sistemi ac") ||
+    lower.includes("warning system on") ||
+    lower.includes("enable warn system")
+
+  const systemOff =
+    lower.includes("warn sistemi kapat") ||
+    lower.includes("uyari sistemi kapat") ||
+    lower.includes("warning system off") ||
+    lower.includes("disable warn system")
+
+  if (systemOn || systemOff) {
+    return {
+      isWarnRequest: true,
+      action: "toggle_warn_system",
+      targetId: null,
+      amount: 1,
+      reason: null,
+      threshold: null,
+      punishmentAction: null,
+      punishmentDurationMs: null,
+      enable: systemOn
+    }
+  }
+
+  const settingMatch =
+    lower.match(/(\d+)\s*warn\s*(olunca|oldugunda|olduğunda)?\s*(mute|kick|ban)/) ||
+    lower.match(/(\d+)\s*uyar[ıi]\s*(olunca|oldugunda|olduğunda)?\s*(mute|kick|ban)/) ||
+    lower.match(/when\s*(\d+)\s*warns?\s*(then)?\s*(mute|kick|ban)/) ||
+    lower.match(/set\s*(mute|kick|ban)\s*at\s*(\d+)\s*warn/)
+
+  if (settingMatch) {
+    let threshold = null
+    let action = null
+
+    if (settingMatch[1] && /^\d+$/.test(settingMatch[1])) {
+      threshold = Number(settingMatch[1])
+      action = settingMatch[3]
+    } else {
+      action = settingMatch[1]
+      threshold = Number(settingMatch[2])
+    }
+
+    return {
+      isWarnRequest: true,
+      action: "set_warn_punishment",
+      targetId: null,
+      amount: 1,
+      reason: null,
+      threshold,
+      punishmentAction: action,
+      punishmentDurationMs: action === "mute" ? parseDurationMs(question) || 15 * 60 * 1000 : null,
+      enable: null
+    }
+  }
+
+  if (!target) return buildEmptyWarnPlan()
+
+  const wantsAddWarn =
+    lower.includes("warnla") ||
+    lower.includes("uyar") ||
+    lower.includes("warn ver") ||
+    lower.includes("warn ekle") ||
+    lower.includes("warn at") ||
+    lower.includes("warn ")
+
+  const wantsRemoveWarn =
+    lower.includes("warn sil") ||
+    lower.includes("uyari sil") ||
+    lower.includes("uyarı sil") ||
+    lower.includes("warn kaldir") ||
+    lower.includes("warn kaldır") ||
+    lower.includes("unwarn")
+
+  const wantsClearWarns =
+    lower.includes("tum warnlari sil") ||
+    lower.includes("tüm warnları sil") ||
+    lower.includes("tum uyarilari sil") ||
+    lower.includes("tüm uyarıları sil") ||
+    lower.includes("clear warns")
+
+  const wantsCheckWarns =
+    lower.includes("warn sayisi") ||
+    lower.includes("warn sayısı") ||
+    lower.includes("kac warn") ||
+    lower.includes("kaç warn") ||
+    lower.includes("warn durumu") ||
+    lower.includes("warnlari goster") ||
+    lower.includes("warnları göster") ||
+    lower.includes("how many warns")
+
+  if (!wantsAddWarn && !wantsRemoveWarn && !wantsClearWarns && !wantsCheckWarns) {
+    return buildEmptyWarnPlan()
+  }
+
+  let action = null
+  if (wantsClearWarns) action = "clear_warns"
+  else if (wantsRemoveWarn) action = "remove_warn"
+  else if (wantsCheckWarns) action = "check_warns"
+  else if (wantsAddWarn) action = "add_warn"
+
+  return {
+    isWarnRequest: true,
+    action,
+    targetId: target.id,
+    amount: 1,
+    reason: extractReason(question, language),
+    threshold: null,
+    punishmentAction: null,
+    punishmentDurationMs: null,
+    enable: null
+  }
+}
+
+function canRequesterUseModeration(member) {
+  if (!member) return false
+  return (
+    isOwner(member) ||
+    hasAdminAccess(member) ||
+    member.permissions.has(PermissionFlagsBits.ModerateMembers) ||
+    member.permissions.has(PermissionFlagsBits.KickMembers) ||
+    member.permissions.has(PermissionFlagsBits.BanMembers)
+  )
+}
+
+function canBotModerateMember(guild, targetMember) {
+  const me = guild.members.me
+  if (!me || !targetMember) return false
+  if (guild.ownerId === targetMember.id) return false
+  if (targetMember.id === client.user.id) return false
+  if (!targetMember.manageable && !targetMember.moderatable && !targetMember.kickable && !targetMember.bannable) {
+    return false
+  }
+  return me.roles.highest.position > targetMember.roles.highest.position
+}
+
+function canRequesterModerateTarget(requester, targetMember) {
+  if (!requester || !targetMember) return false
+  if (requester.guild.ownerId === targetMember.id) return false
+  if (requester.id === targetMember.id) return false
+  if (isOwner(requester)) return true
+  return requester.roles.highest.position > targetMember.roles.highest.position
+}
+
+function isValidTimeoutDuration(ms) {
+  return Number.isFinite(ms) && ms > 0 && ms <= 28 * 24 * 60 * 60 * 1000
+}
+
+function humanizeDuration(ms, language) {
+  const totalMinutes = Math.round(ms / 60000)
+  if (totalMinutes < 60) {
+    return language === "tr" ? `${totalMinutes} dakika` : `${totalMinutes} minutes`
+  }
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (minutes === 0) {
+    return language === "tr" ? `${hours} saat` : `${hours} hours`
+  }
+  return language === "tr"
+    ? `${hours} saat ${minutes} dakika`
+    : `${hours} hours ${minutes} minutes`
+}
+
+function getModerationCooldownKey(guildId, userId, action) {
+  return `${guildId}:${userId}:${action}`
+}
+
+function isModerationActionOnCooldown(guildId, userId, action) {
+  const key = getModerationCooldownKey(guildId, userId, action)
+  const expiresAt = moderationActionCooldown.get(key)
+  if (!expiresAt) return false
+  if (Date.now() >= expiresAt) {
+    moderationActionCooldown.delete(key)
+    return false
+  }
+  return true
+}
+
+function setModerationActionCooldown(guildId, userId, action, ms = 5000) {
+  const key = getModerationCooldownKey(guildId, userId, action)
+  moderationActionCooldown.set(key, Date.now() + ms)
+}
+
+function getWarnsForUser(guildId, userId) {
+  const state = getGuildModerationState(guildId)
+  if (!state.warns[userId]) state.warns[userId] = []
+  return state.warns[userId]
+}
+
+function sortPunishments(list) {
+  return [...list].sort((a, b) => a.warnCount - b.warnCount)
+}
+
+function setWarnPunishment(guildId, warnCount, action, durationMs) {
+  const state = getGuildModerationState(guildId)
+  state.settings.autoPunishments = state.settings.autoPunishments.filter(item => item.warnCount !== warnCount)
+  state.settings.autoPunishments.push({
+    warnCount,
+    action,
+    durationMs: action === "mute" ? durationMs || 15 * 60 * 1000 : null
+  })
+  state.settings.autoPunishments = sortPunishments(state.settings.autoPunishments)
+  saveModerationState()
+}
+
+function addWarn(guildId, userId, moderatorId, reason) {
+  const warns = getWarnsForUser(guildId, userId)
+  const entry = {
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    moderatorId,
+    reason: String(reason || "").slice(0, 300),
+    createdAt: Date.now()
+  }
+  warns.push(entry)
+  saveModerationState()
+  return warns
+}
+
+function removeSingleWarn(guildId, userId) {
+  const warns = getWarnsForUser(guildId, userId)
+  if (!warns.length) return []
+  warns.pop()
+  saveModerationState()
+  return warns
+}
+
+function clearWarns(guildId, userId) {
+  const state = getGuildModerationState(guildId)
+  state.warns[userId] = []
+  saveModerationState()
+  return state.warns[userId]
+}
+
+function getTriggeredPunishment(guildId, warnCount) {
+  const state = getGuildModerationState(guildId)
+  const punishments = sortPunishments(state.settings.autoPunishments || [])
+  return punishments.find(item => item.warnCount === warnCount) || null
+}
+
+async function executeModerationByAction(message, targetMember, action, durationMs, reason, language) {
+  const guild = message.guild
+
+  if (!targetMember) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Hedef kullanıcıyı sunucuda bulamadım."
+        : "I could not find that user in the server."
+    )
+    return true
+  }
+
+  if (!canBotModerateMember(guild, targetMember)) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Bu kullanıcıyı rol hiyerarşisi yüzünden işlemden geçiremiyorum. Bot rolünü daha üste taşı."
+        : "I cannot moderate that user because of role hierarchy. Move my bot role higher."
+    )
+    return true
+  }
+
+  try {
+    if (action === "ban") {
+      if (!botHasPermission(guild, PermissionFlagsBits.BanMembers)) {
+        await safeReply(
+          message,
+          language === "tr"
+            ? "Ban atabilmem için Ban Members yetkisine ihtiyacım var."
+            : "I need Ban Members permission to ban users."
+        )
+        return true
+      }
+
+      await targetMember.ban({
+        deleteMessageSeconds: 0,
+        reason
+      })
+
+      await safeReply(
+        message,
+        language === "tr"
+          ? `${targetMember.user.tag} banlandı.`
+          : `${targetMember.user.tag} has been banned.`
+      )
+      return true
+    }
+
+    if (action === "kick") {
+      if (!botHasPermission(guild, PermissionFlagsBits.KickMembers)) {
+        await safeReply(
+          message,
+          language === "tr"
+            ? "Kick atabilmem için Kick Members yetkisine ihtiyacım var."
+            : "I need Kick Members permission to kick users."
+        )
+        return true
+      }
+
+      await targetMember.kick(reason)
+
+      await safeReply(
+        message,
+        language === "tr"
+          ? `${targetMember.user.tag} sunucudan atıldı.`
+          : `${targetMember.user.tag} has been kicked.`
+      )
+      return true
+    }
+
+    if (action === "mute") {
+      if (!botHasPermission(guild, PermissionFlagsBits.ModerateMembers)) {
+        await safeReply(
+          message,
+          language === "tr"
+            ? "Mute atabilmem için Moderate Members yetkisine ihtiyacım var."
+            : "I need Moderate Members permission to timeout users."
+        )
+        return true
+      }
+
+      const finalDuration = isValidTimeoutDuration(durationMs) ? durationMs : 15 * 60 * 1000
+      await targetMember.timeout(finalDuration, reason)
+
+      await safeReply(
+        message,
+        language === "tr"
+          ? `${targetMember.user.tag} ${humanizeDuration(finalDuration, "tr")} susturuldu.`
+          : `${targetMember.user.tag} has been muted for ${humanizeDuration(finalDuration, "en")}.`
+      )
+      return true
+    }
+
+    if (action === "unmute") {
+      if (!botHasPermission(guild, PermissionFlagsBits.ModerateMembers)) {
+        await safeReply(
+          message,
+          language === "tr"
+            ? "Mute kaldırabilmem için Moderate Members yetkisine ihtiyacım var."
+            : "I need Moderate Members permission to remove a timeout."
+        )
+        return true
+      }
+
+      await targetMember.timeout(null, reason)
+
+      await safeReply(
+        message,
+        language === "tr"
+          ? `${targetMember.user.tag} üzerindeki susturma kaldırıldı.`
+          : `Removed timeout from ${targetMember.user.tag}.`
+      )
+      return true
+    }
+  } catch (error) {
+    console.error("executeModerationByAction error:", error)
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Moderasyon işlemi sırasında bir hata oluştu."
+        : "An error happened during the moderation action."
+    )
+    return true
+  }
+
+  return false
+}
+
+async function executeModerationPlan(message, plan, language) {
+  if (!plan?.isModerationRequest) return false
+
+  const guild = message.guild
+  const requester = message.member
+  const targetMember = await guild.members.fetch(plan.targetId).catch(() => null)
+
+  if (!targetMember) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Hedef kullanıcıyı sunucuda bulamadım."
+        : "I could not find that user in the server."
+    )
+    return true
+  }
+
+  if (!canRequesterUseModeration(requester)) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Bu moderasyon işlemi için yetkin yok."
+        : "You do not have permission for that moderation action."
+    )
+    return true
+  }
+
+  if (!canRequesterModerateTarget(requester, targetMember)) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Bu kullanıcıyı rol hiyerarşisi yüzünden işlemden geçiremezsin."
+        : "You cannot moderate that user because of role hierarchy."
+    )
+    return true
+  }
+
+  if (isModerationActionOnCooldown(guild.id, targetMember.id, plan.action)) {
+    return true
+  }
+
+  const handled = await executeModerationByAction(
+    message,
+    targetMember,
+    plan.action,
+    plan.durationMs,
+    plan.reason,
+    language
+  )
+
+  if (handled) {
+    setModerationActionCooldown(guild.id, targetMember.id, plan.action)
+    return true
+  }
+
+  return false
+}
+
+async function executeWarnPlan(message, plan, language) {
+  if (!plan?.isWarnRequest) return false
+
+  const guild = message.guild
+  const requester = message.member
+  const state = getGuildModerationState(guild.id)
+
+  if (!canRequesterUseModeration(requester)) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Warn sistemi için yetkin yok."
+        : "You do not have permission for the warn system."
+    )
+    return true
+  }
+
+  if (plan.action === "toggle_warn_system") {
+    state.settings.warnSystemEnabled = Boolean(plan.enable)
+    saveModerationState()
+
+    await safeReply(
+      message,
+      language === "tr"
+        ? `Warn sistemi ${plan.enable ? "açıldı" : "kapatıldı"}.`
+        : `Warn system ${plan.enable ? "enabled" : "disabled"}.`
+    )
+    return true
+  }
+
+  if (plan.action === "set_warn_punishment") {
+    if (!Number.isFinite(plan.threshold) || plan.threshold < 1) {
+      await safeReply(
+        message,
+        language === "tr"
+          ? "Geçerli bir warn eşiği yaz."
+          : "Write a valid warn threshold."
+      )
+      return true
+    }
+
+    setWarnPunishment(guild.id, plan.threshold, plan.punishmentAction, plan.punishmentDurationMs)
+
+    const punishments = sortPunishments(state.settings.autoPunishments)
+    const line = punishments
+      .map(item => {
+        if (item.action === "mute") {
+          return language === "tr"
+            ? `${item.warnCount} warn = ${humanizeDuration(item.durationMs, "tr")} mute`
+            : `${item.warnCount} warns = ${humanizeDuration(item.durationMs, "en")} mute`
+        }
+        return `${item.warnCount} warn = ${item.action}`
+      })
+      .join("\n")
+
+    await safeReply(
+      message,
+      language === "tr"
+        ? `Warn ceza eşiği güncellendi.\n${line}`
+        : `Warn punishment threshold updated.\n${line}`
+    )
+    return true
+  }
+
+  if (!state.settings.warnSystemEnabled) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Warn sistemi şu an kapalı."
+        : "Warn system is currently disabled."
+    )
+    return true
+  }
+
+  const targetMember = await guild.members.fetch(plan.targetId).catch(() => null)
+
+  if (!targetMember) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Hedef kullanıcıyı sunucuda bulamadım."
+        : "I could not find that user in the server."
+    )
+    return true
+  }
+
+  if (!canRequesterModerateTarget(requester, targetMember)) {
+    await safeReply(
+      message,
+      language === "tr"
+        ? "Bu kullanıcı üzerinde warn işlemi yapamazsın."
+        : "You cannot use warn actions on that user."
+    )
+    return true
+  }
+
+  if (plan.action === "check_warns") {
+    const warns = getWarnsForUser(guild.id, targetMember.id)
+    const punishments = sortPunishments(state.settings.autoPunishments)
+      .map(item => {
+        if (item.action === "mute") {
+          return language === "tr"
+            ? `${item.warnCount} warn = ${humanizeDuration(item.durationMs, "tr")} mute`
+            : `${item.warnCount} warns = ${humanizeDuration(item.durationMs, "en")} mute`
+        }
+        return `${item.warnCount} warn = ${item.action}`
+      })
+      .join("\n")
+
+    await safeReply(
+      message,
+      language === "tr"
+        ? `${targetMember.user.tag} toplam ${warns.length} warn aldı.\n${punishments ? `\nAktif eşikler:\n${punishments}` : ""}`
+        : `${targetMember.user.tag} has ${warns.length} warns.\n${punishments ? `\nActive thresholds:\n${punishments}` : ""}`
+    )
+    return true
+  }
+
+  if (plan.action === "remove_warn") {
+    const warns = removeSingleWarn(guild.id, targetMember.id)
+    await safeReply(
+      message,
+      language === "tr"
+        ? `${targetMember.user.tag} için 1 warn silindi. Kalan warn: ${warns.length}`
+        : `Removed 1 warn from ${targetMember.user.tag}. Remaining warns: ${warns.length}`
+    )
+    return true
+  }
+
+  if (plan.action === "clear_warns") {
+    clearWarns(guild.id, targetMember.id)
+    await safeReply(
+      message,
+      language === "tr"
+        ? `${targetMember.user.tag} için tüm warnlar temizlendi.`
+        : `Cleared all warns for ${targetMember.user.tag}.`
+    )
+    return true
+  }
+
+  if (plan.action === "add_warn") {
+    const warns = addWarn(guild.id, targetMember.id, requester.id, plan.reason)
+    const warnCount = warns.length
+    const triggered = getTriggeredPunishment(guild.id, warnCount)
+
+    await safeReply(
+      message,
+      language === "tr"
+        ? `${targetMember.user.tag} uyarıldı. Toplam warn: ${warnCount}`
+        : `${targetMember.user.tag} has been warned. Total warns: ${warnCount}`
+    )
+
+    if (triggered) {
+      await executeModerationByAction(
+        message,
+        targetMember,
+        triggered.action,
+        triggered.durationMs,
+        language === "tr"
+          ? `Warn eşiği aşıldı: ${warnCount} warn`
+          : `Warn threshold reached: ${warnCount} warns`,
+        language
+      )
+    }
+
+    return true
+  }
+
+  return false
+}
+
+function getSpamBucketKey(guildId, userId) {
+  return `${guildId}:${userId}`
+}
+
+function checkSpamAndUpdate(message) {
+  const guildSettings = getGuildSettings(message.guild.id)
+  const moderation = guildSettings.moderation || {}
+  if (!moderation.spamAutoMuteEnabled) return { isSpam: false }
+
+  if (message.author.bot) return { isSpam: false }
+  if (!message.member) return { isSpam: false }
+  if (isOwner(message.member) || hasAdminAccess(message.member) || message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+    return { isSpam: false }
+  }
+
+  const key = getSpamBucketKey(message.guild.id, message.author.id)
+  const now = Date.now()
+
+  if (!spamTracker.has(key)) {
+    spamTracker.set(key, {
+      timestamps: [],
+      contents: []
+    })
+  }
+
+  const entry = spamTracker.get(key)
+  const windowMs = moderation.spamWindowMs || 8000
+  const limit = moderation.spamMessageLimit || 6
+
+  entry.timestamps = entry.timestamps.filter(ts => now - ts <= windowMs)
+  entry.contents = entry.contents.filter(item => now - item.time <= windowMs)
+
+  entry.timestamps.push(now)
+  entry.contents.push({
+    value: normalize(message.content).slice(0, 200),
+    time: now
+  })
+
+  const recentCount = entry.timestamps.length
+  const repeatedSameContentCount = entry.contents.filter(
+    item => item.value && item.value === normalize(message.content).slice(0, 200)
+  ).length
+
+  const isSpam = recentCount >= limit || repeatedSameContentCount >= 4
+
+  return {
+    isSpam,
+    muteMs: moderation.spamMuteMs || 15 * 60 * 1000
+  }
+}
+
+async function tryAutoModerateSpam(message) {
+  const result = checkSpamAndUpdate(message)
+  if (!result.isSpam) return false
+
+  const guild = message.guild
+  const member = message.member
+  const language = resolveLanguage(guild.id, message.author.id, message.content)
+
+  if (!member) return false
+  if (!botHasPermission(guild, PermissionFlagsBits.ModerateMembers)) return false
+  if (!canBotModerateMember(guild, member)) return false
+
+  if (isModerationActionOnCooldown(guild.id, member.id, "auto_spam_mute")) return true
+
+  try {
+    const muteMs = isValidTimeoutDuration(result.muteMs) ? result.muteMs : 15 * 60 * 1000
+    await member.timeout(muteMs, "Automatic spam protection by Disogle")
+    setModerationActionCooldown(guild.id, member.id, "auto_spam_mute", muteMs)
+
+    await safeReply(
+      message,
+      language === "tr"
+        ? `${member.user.tag} spam nedeniyle otomatik olarak ${humanizeDuration(muteMs, "tr")} susturuldu.`
+        : `${member.user.tag} has been automatically muted for ${humanizeDuration(muteMs, "en")} because of spam.`
+    )
+    return true
+  } catch (error) {
+    console.error("tryAutoModerateSpam error:", error)
+    return false
+  }
+}
+
 async function createPrivateChannel(message, language) {
   const guild = message.guild
   const member = message.member
@@ -2399,7 +3297,7 @@ async function getChatReply(question, language, tone, replyProfile, userState, f
           type: "input_text",
           text:
             `You are ${BOT_NAME}, a powerful Discord AI developed by ${FOUNDER_NAME}. ` +
-            `You can answer questions, generate text, write code, help with decisions, host mini games, manage roles, manage server structure, and talk like a natural human assistant. ` +
+            `You can answer questions, generate text, write code, help with decisions, host mini games, manage roles, moderate users when authorized, manage warning systems, manage server structure, and talk like a natural human assistant. ` +
             `You are warm, sharp, socially aware, and concise by default. ` +
             `If asked who you are, you may say: "${BOT_IDENTITY_EN}" ` +
             `If asked about your founder, say your founder is ${FOUNDER_NAME}. ` +
@@ -2477,8 +3375,8 @@ client.on(Events.GuildMemberAdd, async member => {
     await safeSend(
       channel,
       lang === "tr"
-        ? `Hoş geldin ${member}! Ben ${BOT_NAME}. Beni etiketleyip soru sorabilir, yardım isteyebilir ya da sunucu yönetimi için kullanabilirsin.`
-        : `Welcome ${member}! I am ${BOT_NAME}. You can mention me for questions, help, or server management.`
+        ? `Hoş geldin ${member}! Ben ${BOT_NAME}. Beni etiketleyip soru sorabilir, yardım isteyebilir ya da sunucu yönetimi ve moderasyon için kullanabilirsin.`
+        : `Welcome ${member}! I am ${BOT_NAME}. You can mention me for questions, help, moderation, or server management.`
     )
   } catch (error) {
     console.error("GuildMemberAdd error:", error)
@@ -2489,6 +3387,8 @@ client.on(Events.MessageCreate, async message => {
   try {
     if (message.author.bot) return
     if (!message.guild) return
+
+    await tryAutoModerateSpam(message)
 
     const hasTrigger = shouldRespond(message)
     const activeGame = getGame(message.channel.id)
@@ -2592,6 +3492,18 @@ client.on(Events.MessageCreate, async message => {
 
     state.tone = tone
     saveUserMessage(message.author.id, question)
+
+    const moderationPlan = detectModerationPlan(message, question, language)
+    if (moderationPlan.isModerationRequest) {
+      const handled = await executeModerationPlan(message, moderationPlan, language)
+      if (handled) return
+    }
+
+    const warnPlan = detectWarnPlan(message, question, language)
+    if (warnPlan.isWarnRequest) {
+      const handled = await executeWarnPlan(message, warnPlan, language)
+      if (handled) return
+    }
 
     if (asksAboutFounder(question)) {
       await safeReply(message, language === "tr" ? `Benim kurucum ${FOUNDER_NAME}.` : `My founder is ${FOUNDER_NAME}.`)
